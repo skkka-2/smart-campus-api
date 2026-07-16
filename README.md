@@ -1,34 +1,38 @@
 # smart-campus-api
 
-大学智学网(item01)后端服务。基于 Koa2 + MySQL + JWT + WebSocket + OpenAI。
+大学智学网后端服务。**Koa2 + MySQL + JWT + WebSocket + OpenAI**,分层架构。
+
+配套前端:https://github.com/skkka-2/smart-campus-web
 
 ## 技术栈
 
 - **Node.js** ≥ 18
 - **Koa2** —— HTTP 服务
 - **mysql2** —— 数据库(MySQL 8.x / 9.x)
-- **jsonwebtoken** —— 用户鉴权
+- **jsonwebtoken** + **bcryptjs** —— 鉴权 & 密码
 - **ws** —— 聊天室 WebSocket
-- **openai** —— AI 助手对话(接 chatanywhere 兼容代理)
+- **openai** —— AI 助手(chatanywhere 兼容代理)
+- **nodemon** —— dev 热重载
 
 ## 目录结构
 
 ```
-server/
-├── app.js              # 入口:注册中间件、路由、启动 WebSocket
-├── db/index.js         # MySQL 连接池
-├── middle/checkToken.js # JWT 中间件(白名单 /user/login /user/register)
-├── router/             # koa-router 路由定义
-│   ├── index.js
-│   ├── user.js         # /user/register /user/login
-│   └── layout.js       # /mainPart/*
-├── router_handler/     # 路由处理函数
-│   ├── user.js
-│   └── layout.js       # titbang / mid / mid2 / chatRoomHistory / ai / upload ...
-├── websocket.js        # 聊天室 WebSocket 服务
-├── schema.sql          # 数据库初始化脚本
-├── .env.example        # 环境变量模板
-└── package.json
+smart-campus-api/
+├── src/
+│   ├── app.js                # 入口:装配中间件 + 路由 + WS
+│   ├── config/               # 环境变量、常量
+│   ├── db/                   # MySQL 连接池
+│   ├── middleware/           # error / auth / logger / cors
+│   ├── routes/               # koa-router 组装(index / user / article / comment / ai / chat)
+│   ├── controllers/          # HTTP I/O 层
+│   ├── services/             # 业务逻辑
+│   ├── repositories/         # SQL 查询(一表一文件)
+│   ├── utils/                # response 包装、jwt 工具、分页
+│   └── websocket/            # WebSocket handler
+├── schema.sql                # 数据库初始化 + 种子数据
+├── .env.example              # 环境变量模板
+├── package.json
+└── README.md
 ```
 
 ## 从零到跑起来
@@ -39,73 +43,108 @@ server/
 npm install
 ```
 
-### 2. 装并启动 MySQL
+### 2. 装 MySQL 并初始化数据库
 
 ```bash
 brew install mysql
 brew services start mysql
 mysql_secure_installation   # 设置 root 密码
-```
-
-### 3. 初始化数据库
-
-```bash
 mysql -u root -p < schema.sql
 ```
-或在可视化工具(Sequel Ace / DBeaver)里粘贴 `schema.sql` 执行。
 
-### 4. 配置环境变量
+也可以在 Sequel Ace / DBeaver 里粘贴 `schema.sql` 执行。
+
+### 3. 配置 .env
 
 ```bash
 cp .env.example .env
-# 编辑 .env,填入自己的 MySQL 密码、JWT secret、OpenAI key 等
 ```
 
-必须填写的字段:
-- `MYSQL_PASSWORD` —— 你的 MySQL root 密码
-- `JWT_SECRET` —— 任意长随机字符串,签发 JWT 用
-- `OPENAI_API_KEY` —— AI 对话接口的密钥(chatanywhere 或 openai 官方)
+必填字段:
+- `MYSQL_PASSWORD` —— MySQL root 密码
+- `JWT_SECRET` —— 一段长随机字符串
+- `OPENAI_API_KEY` —— AI 对话接口的 key(可选,不填 AI 页面不可用)
 
-### 5. 启动
+### 4. 启动
 
 ```bash
 npm run dev
 ```
 
-启动成功会看到:
+看到下面这三行说明成功:
 ```
-[db] Connected to MySQL pool successfully
-Server is running on http://localhost:3007
+[db] connected: root@127.0.0.1:3306/item_01
+[ws] WebSocket ready
+[app] server listening on http://localhost:3007
 ```
+
+## 架构约定
+
+**分层职责**:
+- **routes/** 只做 URL → controller 绑定,per-route 挂 `requireAuth`
+- **controllers/** 只做 HTTP 层(读 req、调 service、`ctx.success/fail`),不写业务
+- **services/** 写业务逻辑,抛 `BizError`(见 `utils/response.js`)
+- **repositories/** 只写 SQL,不感知 HTTP
+
+**统一响应格式**:
+```json
+{ "code": 0, "message": "ok", "data": {...} }
+```
+- `code: 0` = 成功;非 0 为业务错误码
+- HTTP 状态码正常使用(200 / 400 / 401 / 404 / 500)
+- 前端只需检查 `res.data.code === 0`
+
+**鉴权**:per-route 中间件 `requireAuth`,公共接口(注册、登录、文章列表、榜单)无需 token。
+
+**错误处理**:controller 里不写 try/catch,直接抛 `BizError`(或让异常冒泡),全局 error middleware 兜住并返回规范格式。
 
 ## 接口速览
 
 ### 用户
-| Method | Path | 说明 |
-|--------|------|------|
-| POST | `/user/register` | 注册,body: `{ username, password, confirmpassword, phone }` |
-| POST | `/user/login` | 登录,返回 `{ token, userid }` |
+| Method | Path | Auth | 说明 |
+|--------|------|:----:|------|
+| POST | `/api/users/register` | ✗ | body: `{ username, password, phone }` |
+| POST | `/api/users/login` | ✗ | body: `{ username, password }` → `{ token, user }` |
+| GET  | `/api/users/me` | ✓ | 当前登录用户 |
 
-### 首页
-| Method | Path | 说明 |
-|--------|------|------|
-| GET | `/mainPart/titbang` | 首页右侧三个榜单 |
-| GET | `/mainPart/mid?page=1&limit=5` | "推荐" tab 分页 |
-| GET | `/mainPart/mid2?page=1&limit=5` | "最新" tab 分页 |
-| POST | `/mainPart/upload` | 上传文章 |
+### 文章
+| Method | Path | Auth | 说明 |
+|--------|------|:----:|------|
+| GET  | `/api/articles?sort=recommend\|latest&page=1&limit=5` | ✗ | 分页信息流 |
+| GET  | `/api/articles/rankings` | ✗ | 首页右侧三榜(articles/authors/topics)|
+| POST | `/api/articles` | ✓ | body: `{ content }` |
+
+### 评论
+| Method | Path | Auth | 说明 |
+|--------|------|:----:|------|
+| GET  | `/api/comments?page=1&limit=20` | ✗ | 分页 |
+| POST | `/api/comments/query` | ✗ | body: `{ userName }`(兼容旧接口) |
+| POST | `/api/comments` | ✓ | body: `{ content }` |
 
 ### AI 助手
-| Method | Path | 说明 |
-|--------|------|------|
-| POST | `/mainPart/ai` | 向 AI 提问,body: `{ content, userID }` |
-| POST | `/mainPart/getChatHistory` | 拉取用户历史对话 |
-| POST | `/mainPart/clearChatHistory` | 清空对话 |
+| Method | Path | Auth | 说明 |
+|--------|------|:----:|------|
+| POST   | `/api/ai/chat` | ✓ | body: `{ content }` |
+| GET    | `/api/ai/history` | ✓ | 拉取当前用户历史对话 |
+| DELETE | `/api/ai/history` | ✓ | 清空当前用户对话 |
 
-### 聊天室
+### 聊天室(WebSocket)
+| Method | Path | Auth | 说明 |
+|--------|------|:----:|------|
+| GET | `/api/chat/history?limit=10` | ✗ | 最新 N 条群聊 |
+| WS  | `ws://host:3007/?userId=xxx&token=xxx` | 可选 | 长连接,消息格式 `{ senderId, receiverIds, content }` |
+
+### 其它
 | Method | Path | 说明 |
 |--------|------|------|
-| GET | `/mainPart/chatRoomHistory` | 拉取最新 10 条聊天记录 |
-| WS | `ws://host:3007?userId=xxx` | WebSocket 长连,发消息见 `websocket.js` |
+| GET | `/api/health` | 存活检查 |
+
+## 开发
+
+```bash
+npm run dev      # nodemon 热重载
+npm start        # 直接 node
+```
 
 ## 关联仓库
 
