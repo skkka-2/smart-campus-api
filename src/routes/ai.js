@@ -9,5 +9,6 @@ router.use(requireAuth); // 所有 AI 接口都需要登录
 router.post('/chat', aiController.chat);
 router.get('/history', aiController.history);
 router.delete('/history', aiController.clear);
+router.post('/resume-analysis', aiController.analyzeResume);
 
 module.exports = router;

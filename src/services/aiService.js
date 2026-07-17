@@ -50,6 +50,55 @@ const aiService = {
     const affected = await chatMessageRepository.clearByUser(userId);
     return { cleared: affected };
   },
+
+  /**
+   * 简历适配度分析
+   *   给出岗位描述 + 用户简历,让 AI 输出适配度评估 + 改进建议
+   */
+  async analyzeResume({ userId, resume, jobTitle, jobDesc, jobRequirements = [] } = {}) {
+    if (!userId) throw BizError.badRequest('缺少用户 id');
+    if (!resume || resume.trim().length < 20) {
+      throw BizError.badRequest('简历内容太短,至少 20 字');
+    }
+    if (!jobTitle || !jobDesc) throw BizError.badRequest('缺少岗位信息');
+
+    const prompt = [
+      `你是一位资深校招 HR 与技术面试官。请对下面这份候选人简历,针对以下岗位做一次简明的适配度分析。`,
+      ``,
+      `【目标岗位】${jobTitle}`,
+      `【岗位描述】${jobDesc.slice(0, 500)}`,
+      `【核心要求】`,
+      ...(jobRequirements || []).slice(0, 8).map((r, i) => `  ${i + 1}. ${r}`),
+      ``,
+      `【候选人简历】`,
+      resume.slice(0, 2000),
+      ``,
+      `请严格按以下格式输出(用中文,总字数控制在 400 字以内):`,
+      ``,
+      `⭐ 综合适配度:{一个 0-100 的分数} / 100`,
+      ``,
+      `✅ 匹配亮点(3 条以内)`,
+      `- ...`,
+      `- ...`,
+      ``,
+      `⚠️ 差距与改进建议(3 条以内)`,
+      `- ...`,
+      `- ...`,
+      ``,
+      `📝 简历一句话包装建议:...`,
+    ].join('\n');
+
+    const response = await getClient().chat.completions.create({
+      model: config.openai.model,
+      messages: [{ role: 'user', content: prompt }],
+      n: 1,
+      max_tokens: 700,
+    });
+
+    return {
+      analysis: response.choices[0]?.message?.content?.trim() || '(AI 无响应)',
+    };
+  },
 };
 
 module.exports = aiService;

@@ -46,6 +46,34 @@ const userService = {
     if (!user) throw BizError.notFound('用户不存在');
     return user;
   },
+
+  /** 完整画像 */
+  async getProfile(userId) {
+    const profile = await userRepository.findProfileById(userId);
+    if (!profile) throw BizError.notFound('用户不存在');
+    return profile;
+  },
+
+  /** 更新画像 */
+  async updateProfile(userId, patch = {}) {
+    // 基本校验:字段合法值范围
+    const GRADES = ['大一', '大二', '大三', '大四', '研一', '研二', '研三', '其他'];
+    const DIRECTIONS = ['前端', '后端', '算法', '产品', '设计', '运营', '数据', '测试', '其他'];
+    if (patch.grade && !GRADES.includes(patch.grade)) {
+      throw BizError.badRequest('年级不合法');
+    }
+    if (patch.career_direction && !DIRECTIONS.includes(patch.career_direction)) {
+      throw BizError.badRequest('职业方向不合法');
+    }
+    if (patch.interests && !Array.isArray(patch.interests)) {
+      throw BizError.badRequest('兴趣必须是数组');
+    }
+    if (patch.bio && patch.bio.length > 200) {
+      throw BizError.badRequest('个人简介不能超过 200 字');
+    }
+    await userRepository.updateProfile(userId, patch);
+    return userRepository.findProfileById(userId);
+  },
 };
 
 module.exports = userService;

@@ -27,11 +27,47 @@ CREATE TABLE IF NOT EXISTS `userlist` (
   `password` VARCHAR(255) NOT NULL COMMENT 'bcrypt hash',
   `confirmpassword` VARCHAR(255) DEFAULT NULL,
   `phone` VARCHAR(20) NOT NULL,
+  -- Phase 5:画像字段
+  `avatar_url` VARCHAR(500) DEFAULT NULL,
+  `bio` VARCHAR(200) DEFAULT NULL,
+  `major` VARCHAR(64) DEFAULT NULL COMMENT '专业',
+  `college` VARCHAR(64) DEFAULT NULL COMMENT '学校/学院',
+  `grade` VARCHAR(16) DEFAULT NULL COMMENT '年级:大一/大二/大三/大四/研一/研二/研三/其他',
+  `interests` JSON DEFAULT NULL COMMENT '兴趣标签数组',
+  `career_direction` VARCHAR(64) DEFAULT NULL COMMENT '职业方向:前端/后端/算法/产品/设计/运营/其他',
+  `preferred_city` VARCHAR(32) DEFAULT NULL COMMENT '意向城市',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_username` (`username`),
   UNIQUE KEY `uk_phone` (`phone`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 已存在的旧 userlist 补字段(幂等,MySQL 8/9 不支持 ADD COLUMN IF NOT EXISTS,用 information_schema 判断)
+DROP PROCEDURE IF EXISTS `add_user_profile_columns`;
+DELIMITER $$
+CREATE PROCEDURE `add_user_profile_columns`()
+BEGIN
+  DECLARE db VARCHAR(64) DEFAULT DATABASE();
+  IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'userlist' AND COLUMN_NAME = 'avatar_url')
+    THEN ALTER TABLE `userlist` ADD COLUMN `avatar_url` VARCHAR(500) DEFAULT NULL; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'userlist' AND COLUMN_NAME = 'bio')
+    THEN ALTER TABLE `userlist` ADD COLUMN `bio` VARCHAR(200) DEFAULT NULL; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'userlist' AND COLUMN_NAME = 'major')
+    THEN ALTER TABLE `userlist` ADD COLUMN `major` VARCHAR(64) DEFAULT NULL; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'userlist' AND COLUMN_NAME = 'college')
+    THEN ALTER TABLE `userlist` ADD COLUMN `college` VARCHAR(64) DEFAULT NULL; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'userlist' AND COLUMN_NAME = 'grade')
+    THEN ALTER TABLE `userlist` ADD COLUMN `grade` VARCHAR(16) DEFAULT NULL; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'userlist' AND COLUMN_NAME = 'interests')
+    THEN ALTER TABLE `userlist` ADD COLUMN `interests` JSON DEFAULT NULL; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'userlist' AND COLUMN_NAME = 'career_direction')
+    THEN ALTER TABLE `userlist` ADD COLUMN `career_direction` VARCHAR(64) DEFAULT NULL; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'userlist' AND COLUMN_NAME = 'preferred_city')
+    THEN ALTER TABLE `userlist` ADD COLUMN `preferred_city` VARCHAR(32) DEFAULT NULL; END IF;
+END$$
+DELIMITER ;
+CALL `add_user_profile_columns`();
+DROP PROCEDURE `add_user_profile_columns`;
 
 -- ============================================================
 -- 2. category —— 内容分类
@@ -213,7 +249,75 @@ CREATE TABLE IF NOT EXISTS `chatmessages` (
 DROP TABLE IF EXISTS `recommendlist`;
 DROP TABLE IF EXISTS `likelist`;
 
-SELECT 'schema v2 init done' AS status,
+-- ============================================================
+-- Phase 5:岗位 / 收藏 / 投递
+-- ============================================================
+DROP TABLE IF EXISTS `job_application`;
+DROP TABLE IF EXISTS `job_favorite`;
+DROP TABLE IF EXISTS `job`;
+
+CREATE TABLE `job` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `title` VARCHAR(120) NOT NULL COMMENT '岗位名',
+  `company` VARCHAR(80) NOT NULL,
+  `company_logo` VARCHAR(500) DEFAULT NULL,
+  `company_size` VARCHAR(32) DEFAULT NULL COMMENT '10000 人以上 / 1000-9999 人 ...',
+  `industry` VARCHAR(64) DEFAULT NULL COMMENT '互联网 / 金融 / 电商 ...',
+  `city` VARCHAR(32) NOT NULL,
+  `work_type` ENUM('internship', 'campus', 'social') NOT NULL DEFAULT 'internship'
+    COMMENT '实习 / 校招 / 社招',
+  `category` VARCHAR(32) NOT NULL COMMENT '前端/后端/算法/产品/设计/运营/数据/测试',
+  `salary_min` INT UNSIGNED DEFAULT NULL COMMENT '元/天(实习) 或 元/月(校招)',
+  `salary_max` INT UNSIGNED DEFAULT NULL,
+  `salary_display` VARCHAR(32) DEFAULT NULL COMMENT '前端展示用 e.g. "200-400/天"',
+  `degree_required` ENUM('专科','本科','硕士','博士','不限') NOT NULL DEFAULT '本科',
+  `experience_required` VARCHAR(32) DEFAULT '在校生',
+  `description` TEXT NOT NULL,
+  `requirements` JSON DEFAULT NULL COMMENT '要求条目列表',
+  `benefits` JSON DEFAULT NULL COMMENT '福利标签列表',
+  `tags` JSON DEFAULT NULL COMMENT '技能标签',
+  `source_url` VARCHAR(500) DEFAULT NULL,
+  `view_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `apply_count` INT UNSIGNED NOT NULL DEFAULT 0,
+  `is_hot` TINYINT(1) NOT NULL DEFAULT 0,
+  `is_urgent` TINYINT(1) NOT NULL DEFAULT 0,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `expired_at` DATETIME DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_category` (`category`),
+  KEY `idx_city` (`city`),
+  KEY `idx_work_type` (`work_type`),
+  KEY `idx_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `job_favorite` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `job_id` INT UNSIGNED NOT NULL,
+  `user_id` INT UNSIGNED NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_job_user` (`job_id`, `user_id`),
+  KEY `idx_user` (`user_id`),
+  CONSTRAINT `fk_favorite_job` FOREIGN KEY (`job_id`) REFERENCES `job` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_favorite_user` FOREIGN KEY (`user_id`) REFERENCES `userlist` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `job_application` (
+  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `job_id` INT UNSIGNED NOT NULL,
+  `user_id` INT UNSIGNED NOT NULL,
+  `message` TEXT DEFAULT NULL COMMENT '申请留言',
+  `status` ENUM('pending','viewed','interview','offer','rejected','withdrawn') NOT NULL DEFAULT 'pending',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_job_user` (`job_id`, `user_id`),
+  KEY `idx_user_status` (`user_id`, `status`),
+  CONSTRAINT `fk_apply_job` FOREIGN KEY (`job_id`) REFERENCES `job` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_apply_user` FOREIGN KEY (`user_id`) REFERENCES `userlist` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+SELECT 'schema v3 init done' AS status,
        (SELECT COUNT(*) FROM article)    AS articles,
        (SELECT COUNT(*) FROM category)   AS categories,
-       (SELECT COUNT(*) FROM comment)    AS comments;
+       (SELECT COUNT(*) FROM comment)    AS comments,
+       (SELECT COUNT(*) FROM job)        AS jobs;

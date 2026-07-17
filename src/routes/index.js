@@ -5,6 +5,7 @@ const categoryRoutes = require('./category');
 const commentRoutes = require('./comment');
 const aiRoutes = require('./ai');
 const chatRoutes = require('./chat');
+const jobRoutes = require('./job');
 
 const router = new Router({ prefix: '/api' });
 
@@ -16,5 +17,6 @@ router.use('/categories', categoryRoutes.routes(), categoryRoutes.allowedMethods
 router.use('/comments', commentRoutes.routes(), commentRoutes.allowedMethods());
 router.use('/ai', aiRoutes.routes(), aiRoutes.allowedMethods());
 router.use('/chat', chatRoutes.routes(), chatRoutes.allowedMethods());
+router.use('/jobs', jobRoutes.routes(), jobRoutes.allowedMethods());
 
 module.exports = router;

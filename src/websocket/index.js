@@ -2,19 +2,21 @@ const WebSocket = require('ws');
 const chatService = require('../services/chatService');
 const { verify, extractFromHeader } = require('../utils/jwt');
 
-/**
- * 大厅 receiver_id(所有群聊消息都记这个)
- * TODO Phase 3:用真正的房间号
- */
+/** 聊天大厅 receiver_id */
 const HALL_ID = '1';
 
-/**
- * 在线用户注册表:userId -> Set<WebSocket>
- * 用 Set 是为了支持同一用户多标签页/多端在线
- */
+/** userId -> Set<WebSocket> */
 const clients = new Map();
 
-/** 广播在线用户列表 */
+/**
+ * 岗位浏览房间
+ *   jobId(string) -> Set<WebSocket>
+ * 用于"N 人正在看这个岗位"实时广播。
+ */
+const jobRooms = new Map();
+
+// ==================== 聊天大厅 ====================
+
 function broadcastOnlineUsers() {
   const users = Array.from(clients.keys());
   const payload = JSON.stringify({ type: 'onlineUsers', users });
@@ -25,7 +27,6 @@ function broadcastOnlineUsers() {
   }
 }
 
-/** 定点发消息给指定 receiverIds(不发给自己) */
 function dispatch(senderId, receiverIds, message) {
   const targets = Array.isArray(receiverIds) ? receiverIds : [receiverIds];
   const payload = JSON.stringify(message);
@@ -39,10 +40,53 @@ function dispatch(senderId, receiverIds, message) {
   }
 }
 
-/**
- * 从连接 URL 里解析 userId 和(可选)token
- * 期望 URL 形如 /?userId=xxx&token=yyy
- */
+// ==================== 岗位浏览房间 ====================
+
+function broadcastJobViewers(jobId) {
+  const room = jobRooms.get(String(jobId));
+  const count = room ? room.size : 0;
+  const payload = JSON.stringify({ type: 'jobViewers', jobId: String(jobId), count });
+  if (!room) return;
+  for (const ws of room) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(payload);
+  }
+}
+
+function joinJobRoom(ws, jobId) {
+  const key = String(jobId);
+  if (!jobRooms.has(key)) jobRooms.set(key, new Set());
+  jobRooms.get(key).add(ws);
+  ws._joinedJobRooms = ws._joinedJobRooms || new Set();
+  ws._joinedJobRooms.add(key);
+  broadcastJobViewers(key);
+}
+
+function leaveJobRoom(ws, jobId) {
+  const key = String(jobId);
+  const room = jobRooms.get(key);
+  if (!room) return;
+  room.delete(ws);
+  if (room.size === 0) jobRooms.delete(key);
+  ws._joinedJobRooms?.delete(key);
+  broadcastJobViewers(key);
+}
+
+function leaveAllJobRooms(ws) {
+  const rooms = ws._joinedJobRooms;
+  if (!rooms) return;
+  for (const key of rooms) {
+    const room = jobRooms.get(key);
+    if (room) {
+      room.delete(ws);
+      if (room.size === 0) jobRooms.delete(key);
+      broadcastJobViewers(key);
+    }
+  }
+  ws._joinedJobRooms = null;
+}
+
+// ==================== handshake ====================
+
 function parseHandshake(reqUrl) {
   try {
     const url = new URL(reqUrl, 'http://localhost');
@@ -54,77 +98,89 @@ function parseHandshake(reqUrl) {
   }
 }
 
-/** 验证握手参数;返回真实 userId(或 null 表示拒绝) */
 function validateHandshake({ userId, token }) {
   if (!userId) return null;
-  if (!token) return userId; // TODO Phase 3:强制要 token
+  if (!token) return userId;
   try {
     const payload = verify(token);
-    // 允许查询参数里的 userId 和 token 里的对齐;不对齐时以 token 为准
     return String(payload.id || userId);
   } catch {
     return null;
   }
 }
 
+// ==================== 主入口 ====================
+
 function initWebSocket(server) {
   const wss = new WebSocket.Server({ server });
 
   wss.on('connection', (ws, req) => {
-    // ⚠️ userId 是 connection scope,不再是模块级——修了新连接覆盖旧的 bug
     const handshake = parseHandshake(req.url);
     const userId = validateHandshake(handshake);
-    if (!userId) {
-      ws.close(4001, 'unauthorized');
-      return;
-    }
 
-    if (!clients.has(userId)) clients.set(userId, new Set());
-    clients.get(userId).add(ws);
-    broadcastOnlineUsers();
+    // 岗位房间连接不强制登录(匿名用户也能看"N 人在看")
+    // 聊天需要登录,消息处理里会检查
+    if (userId) {
+      if (!clients.has(userId)) clients.set(userId, new Set());
+      clients.get(userId).add(ws);
+      broadcastOnlineUsers();
+    }
 
     ws.on('message', async (raw) => {
       let msg;
-      try {
-        msg = JSON.parse(raw.toString());
-      } catch {
-        return; // 忽略非 JSON
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+      // === 岗位房间 ===
+      if (msg.type === 'joinJobRoom' && msg.jobId != null) {
+        joinJobRoom(ws, msg.jobId);
+        return;
       }
+      if (msg.type === 'leaveJobRoom' && msg.jobId != null) {
+        leaveJobRoom(ws, msg.jobId);
+        return;
+      }
+
+      // === 聊天大厅(登录用户) ===
+      if (!userId) return;
       const { senderId, receiverIds, content } = msg;
-      const senderIsSelf = String(senderId) === userId;
-      const safeSenderId = senderIsSelf ? userId : userId; // 无论前端给什么,发送方一律以连接身份为准
+      if (senderId == null || content == null) return;
 
       const groupChat = Array.isArray(receiverIds);
       const dbReceiver = groupChat ? HALL_ID : String(receiverIds);
       const { createdAt } = await chatService.save({
-        senderId: safeSenderId,
+        senderId: userId,
         receiverId: dbReceiver,
         content,
       });
 
       const payload = {
-        senderId: safeSenderId,
+        senderId: userId,
         content,
         createdAt: new Date(createdAt.replace(' ', 'T')).toISOString(),
       };
-      dispatch(safeSenderId, groupChat ? Array.from(clients.keys()) : [receiverIds], payload);
+      dispatch(userId, groupChat ? Array.from(clients.keys()) : [receiverIds], payload);
     });
 
     ws.on('close', () => {
-      const set = clients.get(userId);
-      if (set) {
-        set.delete(ws);
-        if (set.size === 0) clients.delete(userId);
+      // 清岗位房间
+      leaveAllJobRooms(ws);
+      // 清聊天大厅
+      if (userId) {
+        const set = clients.get(userId);
+        if (set) {
+          set.delete(ws);
+          if (set.size === 0) clients.delete(userId);
+        }
+        broadcastOnlineUsers();
       }
-      broadcastOnlineUsers();
     });
 
     ws.on('error', (err) => {
-      console.error(`[ws] user=${userId} error:`, err.message);
+      console.error(`[ws] error:`, err.message);
     });
   });
 
-  console.log('[ws] WebSocket ready');
+  console.log('[ws] WebSocket ready (with job rooms)');
 }
 
 module.exports = initWebSocket;

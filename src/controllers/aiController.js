@@ -20,6 +20,19 @@ const aiController = {
     const data = await aiService.clearHistory(ctx.state.user.id);
     ctx.success(data, '已清空');
   },
+
+  /** POST /api/ai/resume-analysis  body: { resume, jobTitle, jobDesc, jobRequirements } */
+  async analyzeResume(ctx) {
+    const { resume, jobTitle, jobDesc, jobRequirements } = ctx.request.body || {};
+    const data = await aiService.analyzeResume({
+      userId: ctx.state.user.id,
+      resume,
+      jobTitle,
+      jobDesc,
+      jobRequirements,
+    });
+    ctx.success(data);
+  },
 };
 
 module.exports = aiController;
