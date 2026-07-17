@@ -2,21 +2,33 @@ const commentRepository = require('../repositories/commentRepository');
 const { BizError } = require('../utils/response');
 
 const commentService = {
-  /** 按用户名查评论 */
   async listByUsername(userName) {
     if (!userName) throw BizError.badRequest('缺少 userName');
     return commentRepository.findByUsername(userName);
   },
 
-  /** 分页拉全部评论 */
   async list({ offset, limit } = {}) {
     return commentRepository.list({ offset, limit });
   },
 
-  /** 新增评论 */
-  async create({ userName, content } = {}) {
-    if (!userName || !content) throw BizError.badRequest('userName 和 content 都不能为空');
-    const id = await commentRepository.create({ userName, content });
+  async listByArticle({ articleId, offset, limit } = {}) {
+    const [items, total] = await Promise.all([
+      commentRepository.listByArticle(articleId, { offset, limit }),
+      commentRepository.countByArticle(articleId),
+    ]);
+    return { items, total };
+  },
+
+  async create({ articleId, userId, userName, content } = {}) {
+    if (!userName) throw BizError.badRequest('缺少作者信息');
+    if (!content || !content.trim()) throw BizError.badRequest('评论不能为空');
+    const id = await commentRepository.create({
+      articleId,
+      userId,
+      userName,
+      content: content.trim(),
+      time: Date.now(),
+    });
     return { id };
   },
 };
