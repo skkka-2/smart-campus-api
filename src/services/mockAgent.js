@@ -10,6 +10,7 @@
  */
 
 const { getTool, unwrapToolData } = require('../agent/toolRegistry');
+const agentTracer = require('../observability/agentTracer');
 
 function classifyIntent(text, context = {}) {
   const s = String(text || '').toLowerCase();
@@ -66,7 +67,18 @@ async function runMockAgent(userId, userMessage, onEvent, context = {}) {
       return { error: err };
     }
     try {
-      const result = await tool.handler(args, { userId });
+      const result = await agentTracer.withSpan(`agent.tool.${name}`, {
+        'agent.tool.name': name,
+        'agent.tool.args': agentTracer.summarizeToolArgs(args),
+        'agent.mock': true,
+      }, async (span) => {
+        const toolResult = await tool.handler(args, { userId });
+        span.setAttributes({
+          'agent.tool.ok': toolResult?.ok !== false,
+          'agent.tool.summary': toolResult?.display?.summary || '',
+        });
+        return toolResult;
+      });
       const data = unwrapToolData(result);
       onEvent({
         type: 'tool_result',
@@ -198,7 +210,20 @@ async function runMockAgent(userId, userMessage, onEvent, context = {}) {
       `• "看看我投过什么"`;
   }
 
-  onEvent({ type: 'final', content: finalText, toolCalls: executedCalls.length });
+  agentTracer.updateCurrentObservation({
+    output: agentTracer.previewText(finalText, 800),
+    metadata: {
+      toolCalls: executedCalls.length,
+      outputLength: finalText.length,
+      mock: true,
+    },
+  }, 'agent');
+  onEvent({
+    type: 'final',
+    content: finalText,
+    toolCalls: executedCalls.length,
+    traceContext: agentTracer.getTraceContext(),
+  });
   return { finalText, toolCalls: executedCalls };
 }
 

@@ -167,9 +167,11 @@ npm run dev
 
 ## Agent 架构
 
-`src/agent/` 把原来的 AI 对话拆成 5 个可讲清楚的模块:
+`src/agent/` 把原来的 AI 对话拆成 7 个可讲清楚的模块:
 
 - `prompt.js`:系统提示词,限定它是校园服务/就业助手。
+- `llmClient.js`:统一创建 OpenAI 兼容客户端,兼容 GLM/DeepSeek 等 baseURL。
+- `intentExtractor.js`:用 `response_format: { type: "json_object" }` 做意图/槽位抽取,不支持时自动降级。
 - `memoryService.js`:按用户加载近期对话,并把 assistant metadata 存成工具轨迹。
 - `toolRegistry.js`:统一登记工具 schema、handler、展示摘要和确认策略。
 - `runner.js`:OpenAI tool calling 循环;失败时切到 mock agent,保证演示可用。
@@ -188,17 +190,116 @@ SSE 事件约定:
 
 | type | 用途 |
 |------|------|
+| `intent` | JSON Mode 抽取出的意图、置信度和 slots |
 | `thinking` | Agent 开始一轮推理 |
 | `tool_call` | 即将调用业务工具 |
 | `tool_result` | 工具完成,含 `ok/summary/result` |
 | `action_required` | 需要用户确认的高风险动作,如 `apply_job` |
-| `final` | 最终自然语言回答 |
+| `delta` | LLM token/chunk 级流式文本增量 |
+| `final` | 最终完整回答,用于收尾和持久化校准 |
 | `mock_fallback` | OpenAI 不可用时切到本地规则兜底 |
 
 业务集成示例:
 - 岗位详情页跳转 `/agent?jobId=12&prompt=为什么这个岗位适合我`。
 - 前端向 `/api/agent/stream` 发送 `{ message, context: { jobId: 12 } }`。
 - `runner` 把 jobId 写入上下文提示,模型优先调用 `get_job_detail` 和 `get_my_profile`,再输出匹配理由。
+
+### JSON Mode 意图抽取
+
+在正式 tool calling 前,`intentExtractor` 会先让模型输出稳定 JSON:
+
+```json
+{
+  "intent": "job_search",
+  "confidence": 0.92,
+  "slots": {
+    "city": "深圳",
+    "category": "前端",
+    "workType": "internship",
+    "degree": null,
+    "salaryMin": null,
+    "keyword": null,
+    "jobId": null
+  },
+  "needsProfile": false,
+  "needsConfirmation": false,
+  "reason": "用户想搜索深圳前端实习"
+}
+```
+
+如果当前模型兼容 `response_format`,请求会带:
+
+```json
+{ "type": "json_object" }
+```
+
+如果模型返回 `unsupported response_format` 之类错误,后端会把 JSON Mode 标记为不可用并自动重试一次普通 prompt-only JSON 抽取。这个结构化结果不会替代 tool calling,而是作为额外 system context 帮模型更稳定地选择 `list_jobs`、`recommend_jobs`、`apply_job` 等工具。
+
+## 腾讯云 CLS Agent 可观测
+
+本项目支持把 Agent 调用链路按 OpenTelemetry Trace 上报到腾讯云 CLS Agent 可观测。
+
+### 本地配置
+
+在 `.env` 中开启并填写腾讯云配置:
+
+```env
+AGENT_OBSERVABILITY_ENABLED=true
+CLS_DEFAULT_REGION=ap-guangzhou
+CLS_TOPIC_ID=8de864a4-99c4-4af8-8695-e9ec8a561893
+TENCENTCLOUD_SECRET_ID=your_tencentcloud_secret_id
+TENCENTCLOUD_SECRET_KEY=your_tencentcloud_secret_key
+SERVICE_NAME=smart-campus-agent
+AGENT_TRACE_SAMPLE_RATIO=1
+```
+
+`.env` 已被 `.gitignore` 忽略,不要把真实 SecretId / SecretKey 提交到仓库。
+
+### Trace 结构
+
+一次 `/api/agent/stream` 请求会生成一条 `agent.run` 根链路,下挂:
+
+- `agent.memory.load`:加载历史上下文。
+- `agent.intent.extract`:JSON Mode 意图/槽位抽取。
+- `gen_ai.chat.completions`:调用 OpenAI 兼容接口,记录模型和 token usage。
+- `agent.tool.<toolName>`:业务工具调用,如 `get_job_detail`、`recommend_jobs`。
+
+上报字段只包含脱敏后的工程指标:
+
+- `agent.session_id`
+- `agent.user_id_hash`
+- `agent.context.job_id`
+- `agent.prompt.length`
+- `agent.prompt.has_job_intent`
+- `agent.prompt.has_apply_intent`
+- `agent.intent.name`
+- `agent.intent.confidence`
+- `agent.intent.json_mode_used`
+- `agent.tool.name`
+- `agent.tool.summary`
+- `gen_ai.request.model`
+- `gen_ai.usage.input_tokens`
+- `gen_ai.usage.output_tokens`
+
+不会上报 prompt 原文、简历全文、投递留言、手机号、token 或密钥。
+
+### 验证
+
+1. 启动后端并触发一次 Agent 对话。
+2. 进入腾讯云 CLS 控制台,打开对应 trace topic 的检索分析。
+3. 查询最新 Trace:
+
+```sql
+* | SELECT traceID, spanID, name, duration, statusCode ORDER BY __TIMESTAMP__ DESC LIMIT 10
+```
+
+4. 如果要按模型统计平均耗时:
+
+```sql
+* | SELECT json_extract_scalar(attribute,'$."gen_ai.request.model"') AS model,
+         AVG(duration) AS avg_duration_ns
+    GROUP BY model
+```
 
 ### 聊天室(WebSocket)
 | Method | Path | 说明 |

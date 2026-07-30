@@ -1,6 +1,7 @@
 const Koa = require('koa2');
 const bodyParser = require('koa-bodyparser');
 
+const observability = require('./observability/instrumentation');
 const config = require('./config');
 const { verifyConnection } = require('./db');
 const { responseMiddleware } = require('./utils/response');
@@ -11,6 +12,7 @@ const router = require('./routes');
 const initWebSocket = require('./websocket');
 
 async function bootstrap() {
+  await observability.start();
   await verifyConnection();
 
   const app = new Koa();
@@ -31,7 +33,10 @@ async function bootstrap() {
 
   const shutdown = (signal) => {
     console.log(`[app] received ${signal}, shutting down`);
-    server.close(() => process.exit(0));
+    server.close(async () => {
+      await observability.shutdown();
+      process.exit(0);
+    });
     setTimeout(() => process.exit(1), 5_000).unref();
   };
   process.on('SIGINT', () => shutdown('SIGINT'));

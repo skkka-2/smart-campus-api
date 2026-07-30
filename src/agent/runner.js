@@ -1,27 +1,16 @@
-const OpenAI = require('openai');
 const config = require('../config');
 const { BizError } = require('../utils/response');
 const { SYSTEM_PROMPT } = require('./prompt');
 const memoryService = require('./memoryService');
 const toolRegistry = require('./toolRegistry');
 const trace = require('./traceService');
+const agentTracer = require('../observability/agentTracer');
 const { runMockAgent } = require('../services/mockAgent');
+const { getClient } = require('./llmClient');
+const { buildIntentMessages, extractIntent } = require('./intentExtractor');
 
 const MAX_STEPS = 6;
 const FORCE_MOCK = String(process.env.AGENT_MOCK || '').toLowerCase() === 'true';
-
-let cachedClient = null;
-
-function getClient() {
-  if (!cachedClient) {
-    if (!config.openai.apiKey) throw BizError.badRequest('OpenAI API key 未配置');
-    cachedClient = new OpenAI({
-      apiKey: config.openai.apiKey,
-      baseURL: config.openai.baseUrl,
-    });
-  }
-  return cachedClient;
-}
 
 function buildConfirmText(name, args) {
   if (name === 'apply_job') {
@@ -58,6 +47,103 @@ function buildContextMessages(context = {}) {
   }];
 }
 
+function applyToolCallDelta(toolCalls, deltaCall) {
+  const index = deltaCall.index ?? toolCalls.length;
+  if (!toolCalls[index]) {
+    toolCalls[index] = {
+      id: deltaCall.id || '',
+      type: deltaCall.type || 'function',
+      function: { name: '', arguments: '' },
+    };
+  }
+
+  const target = toolCalls[index];
+  if (deltaCall.id) target.id = deltaCall.id;
+  if (deltaCall.type) target.type = deltaCall.type;
+  if (deltaCall.function?.name) target.function.name += deltaCall.function.name;
+  if (deltaCall.function?.arguments) target.function.arguments += deltaCall.function.arguments;
+}
+
+async function createStreamingCompletion({
+  client, messages, tools, onDelta, sessionId, runSpan,
+}) {
+  return agentTracer.withSpan('gen_ai.chat.completions', {
+    'agent.session_id': sessionId,
+    'gen_ai.system': config.openai.provider,
+    'gen_ai.request.model': config.openai.model,
+    'gen_ai.request.max_tokens': 800,
+    'gen_ai.request.message_count': messages.length,
+    'agent.tool.schema_count': tools.length,
+    'gen_ai.request.stream': true,
+  }, async (span) => {
+    const stream = await client.chat.completions.create({
+      model: config.openai.model,
+      messages,
+      tools,
+      tool_choice: 'auto',
+      max_tokens: 800,
+      stream: true,
+    });
+
+    let content = '';
+    let finishReason = null;
+    const toolCalls = [];
+
+    for await (const chunk of stream) {
+      const choice = chunk.choices?.[0];
+      if (!choice) continue;
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+
+      const delta = choice.delta || {};
+      if (delta.content) {
+        content += delta.content;
+        onDelta(delta.content);
+      }
+
+      if (Array.isArray(delta.tool_calls)) {
+        for (const deltaCall of delta.tool_calls) {
+          applyToolCallDelta(toolCalls, deltaCall);
+        }
+      }
+    }
+
+    const normalizedToolCalls = toolCalls
+      .filter((call) => call?.function?.name)
+      .map((call, index) => ({
+        id: call.id || `tool_call_${Date.now()}_${index}`,
+        type: call.type || 'function',
+        function: {
+          name: call.function.name,
+          arguments: call.function.arguments || '{}',
+        },
+      }));
+
+    if (span) {
+      span.setAttributes({
+        'gen_ai.response.finish_reason': finishReason || '',
+        'gen_ai.response.content_length': content.length,
+        'agent.tool.call_count': normalizedToolCalls.length,
+      });
+    }
+    agentTracer.addEvent(runSpan, 'agent.generation_stream_done', {
+      finishReason,
+      contentLength: content.length,
+      toolCalls: normalizedToolCalls.length,
+    });
+
+    return {
+      message: {
+        role: 'assistant',
+        content: content || null,
+        ...(normalizedToolCalls.length ? { tool_calls: normalizedToolCalls } : {}),
+      },
+      finishReason,
+    };
+  }, {
+    asType: 'generation',
+  });
+}
+
 async function runAgent({
   userId, message, context, onEvent,
 }) {
@@ -66,9 +152,21 @@ async function runAgent({
   }
 
   const sessionId = String(Date.now());
+  const mock = FORCE_MOCK || !config.openai.apiKey;
+  return agentTracer.withAgentRun({
+    userId, sessionId, message, context, mock,
+  }, (runSpan) => runAgentWithSession({
+    userId, message, context, onEvent, sessionId, runSpan,
+  }));
+}
+
+async function runAgentWithSession({
+  userId, message, context, onEvent, sessionId, runSpan,
+}) {
   await memoryService.saveMessage({ userId, sessionId, role: 'user', text: message });
 
   if (FORCE_MOCK || !config.openai.apiKey) {
+    agentTracer.addEvent(runSpan, 'agent.mock_start');
     const { finalText, toolCalls } = await runMockAgent(userId, message, onEvent, context);
     await memoryService.saveMessage({
       userId,
@@ -80,10 +178,33 @@ async function runAgent({
     return { finalText, toolCalls };
   }
 
-  const history = await memoryService.loadRecentMessages({ userId });
+  const history = await agentTracer.withSpan('agent.memory.load', {
+    'agent.session_id': sessionId,
+    'agent.user_id_hash': require('../observability/redactor').hashUserId(userId),
+  }, () => memoryService.loadRecentMessages({ userId }));
+  const intent = await extractIntent({
+    userId,
+    message,
+    context,
+    sessionId,
+    runSpan,
+  }).catch((err) => {
+    console.warn('[agent] intent extraction skipped:', err.message);
+    agentTracer.addEvent(runSpan, 'agent.intent.error', { message: err.message });
+    return null;
+  });
+  if (intent) {
+    onEvent(trace.createIntentEvent({
+      intent: intent.intent,
+      confidence: intent.confidence,
+      slots: intent.slots,
+      jsonMode: intent.jsonMode,
+    }));
+  }
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     ...buildContextMessages(context),
+    ...buildIntentMessages(intent),
     ...history,
     { role: 'user', content: message },
   ];
@@ -95,15 +216,20 @@ async function runAgent({
 
   for (let step = 0; step < MAX_STEPS; step += 1) {
     onEvent(trace.createThinkingEvent({ step }));
+    agentTracer.addEvent(runSpan, 'agent.thinking', { step });
 
-    let response;
+    let completion;
     try {
-      response = await client.chat.completions.create({
-        model: config.openai.model,
+      completion = await createStreamingCompletion({
+        client,
         messages,
         tools,
-        tool_choice: 'auto',
-        max_tokens: 800,
+        sessionId,
+        runSpan,
+        onDelta(delta) {
+          finalText += delta;
+          onEvent(trace.createDeltaEvent({ content: delta }));
+        },
       });
     } catch (err) {
       if (step === 0) {
@@ -120,14 +246,15 @@ async function runAgent({
         return { finalText: mockFinal, toolCalls: mockCalls };
       }
       onEvent(trace.createErrorEvent({ message: `AI 调用失败:${err.message}` }));
+      agentTracer.addEvent(runSpan, 'agent.error', { message: err.message });
       throw err;
     }
 
-    const assistantMsg = response.choices[0].message;
+    const assistantMsg = completion.message;
     messages.push(assistantMsg);
 
     if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
-      finalText = (assistantMsg.content || '').trim();
+      finalText = (assistantMsg.content || finalText || '').trim();
       break;
     }
 
@@ -141,6 +268,10 @@ async function runAgent({
       }
 
       onEvent(trace.createToolCallEvent({ id: call.id, name, args }));
+      agentTracer.addEvent(runSpan, 'agent.tool_call', {
+        tool: name,
+        args: agentTracer.summarizeToolArgs(args),
+      });
 
       const tool = toolRegistry.getToolDefinition(name);
       let result;
@@ -179,7 +310,18 @@ async function runAgent({
         continue;
       } else {
         try {
-          result = await tool.handler(args, { userId });
+          result = await agentTracer.withSpan(`agent.tool.${name}`, {
+            'agent.session_id': sessionId,
+            'agent.tool.name': name,
+            'agent.tool.args': agentTracer.summarizeToolArgs(args),
+          }, async (span) => {
+            const toolResult = await tool.handler(args, { userId });
+            span.setAttributes({
+              'agent.tool.ok': toolResult?.ok !== false,
+              'agent.tool.summary': toolResult?.display?.summary || '',
+            });
+            return toolResult;
+          });
         } catch (err) {
           errorStr = err.message || String(err);
         }
@@ -207,6 +349,11 @@ async function runAgent({
         error: errorStr,
         summary: result?.display?.summary,
       }));
+      agentTracer.addEvent(runSpan, 'agent.tool_result', {
+        tool: name,
+        ok: !errorStr,
+        summary: result?.display?.summary || errorStr || '',
+      });
     }
   }
 
@@ -220,7 +367,24 @@ async function runAgent({
     metadata: executedCalls.length ? buildToolMetadata(executedCalls) : null,
   });
 
-  onEvent(trace.createFinalEvent({ content: finalText, toolCalls: executedCalls.length }));
+  const traceContext = agentTracer.getTraceContext();
+  agentTracer.updateCurrentObservation({
+    output: agentTracer.previewText(finalText, 800),
+    metadata: {
+      toolCalls: executedCalls.length,
+      outputLength: finalText.length,
+    },
+  }, 'agent');
+  onEvent(trace.createFinalEvent({
+    content: finalText,
+    toolCalls: executedCalls.length,
+    traceContext,
+  }));
+  agentTracer.addEvent(runSpan, 'agent.final', {
+    toolCalls: executedCalls.length,
+    outputLength: finalText.length,
+    trace: traceContext,
+  });
 
   return { finalText, toolCalls: executedCalls };
 }

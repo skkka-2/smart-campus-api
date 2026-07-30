@@ -12,6 +12,8 @@
 -- 数据会先迁移到新 article 表。如果你需要保留原始 SQL,请提前备份。
 -- ============================================================
 
+SET NAMES utf8mb4;
+
 CREATE DATABASE IF NOT EXISTS `item_01`
   DEFAULT CHARACTER SET utf8mb4
   DEFAULT COLLATE utf8mb4_unicode_ci;
@@ -215,15 +217,15 @@ CREATE TABLE IF NOT EXISTS `layoutlist` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+TRUNCATE TABLE `layoutlist`;
+
 INSERT INTO `layoutlist` (`bang1`, `bang2`, `bang3`)
-SELECT * FROM (
-  SELECT '2025 考研备考全攻略' AS b1, '张老师' AS b2, '#字节跳动秋招面试题#' AS b3
-  UNION ALL SELECT '前端秋招面试真题合集', '李老师', '#校招大牛七战字节收割 SSP#'
-  UNION ALL SELECT 'MySQL 索引原理详解',   '王同学', '#我的 Java 后端之旅#'
-  UNION ALL SELECT 'Vue3 + Vite 实战项目',  '赵学长', '#双非本科如何冲刺大厂#'
-  UNION ALL SELECT '高效学习方法论',         '孙学姐', '#研究生复试经验分享#'
-) AS s
-WHERE NOT EXISTS (SELECT 1 FROM `layoutlist` LIMIT 1);
+VALUES
+  ('2025 考研备考全攻略', '张老师', '#字节跳动秋招面试题#'),
+  ('前端秋招面试真题合集', '李老师', '#校招大牛七战字节收割 SSP#'),
+  ('MySQL 索引原理详解',   '王同学', '#我的 Java 后端之旅#'),
+  ('Vue3 + Vite 实战项目',  '赵学长', '#双非本科如何冲刺大厂#'),
+  ('高效学习方法论',         '孙学姐', '#研究生复试经验分享#');
 
 CREATE TABLE IF NOT EXISTS `message` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,

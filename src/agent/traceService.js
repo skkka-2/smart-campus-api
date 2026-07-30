@@ -27,8 +27,17 @@ function createActionRequiredEvent({ action, payload, confirmText }) {
   };
 }
 
-function createFinalEvent({ content, toolCalls = 0 }) {
-  return { type: 'final', content, toolCalls };
+function createFinalEvent({ content, toolCalls = 0, traceContext = null }) {
+  return {
+    type: 'final',
+    content,
+    toolCalls,
+    traceContext,
+  };
+}
+
+function createDeltaEvent({ content }) {
+  return { type: 'delta', content };
 }
 
 function createErrorEvent({ message }) {
@@ -39,12 +48,26 @@ function createMockFallbackEvent({ reason }) {
   return { type: 'mock_fallback', reason };
 }
 
+function createIntentEvent({
+  intent, confidence, slots, jsonMode,
+}) {
+  return {
+    type: 'intent',
+    intent,
+    confidence,
+    slots,
+    jsonMode,
+  };
+}
+
 module.exports = {
   createThinkingEvent,
   createToolCallEvent,
   createToolResultEvent,
   createActionRequiredEvent,
   createFinalEvent,
+  createDeltaEvent,
   createErrorEvent,
   createMockFallbackEvent,
+  createIntentEvent,
 };
