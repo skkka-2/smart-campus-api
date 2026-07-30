@@ -30,6 +30,7 @@ smart-campus-api/
 │   │   └── cors.js           # CORS 白名单
 │   ├── routes/               # koa-router 组装,per-route 挂 auth
 │   ├── controllers/          # HTTP I/O 层,只做 req→service→ctx.success/fail
+│   ├── agent/                # 智学助手:prompt / memory / tools / runner / trace
 │   ├── services/             # 业务逻辑,抛 BizError
 │   ├── repositories/         # SQL 层,一表一文件
 │   ├── utils/                # 响应包装、jwt、分页
@@ -153,12 +154,51 @@ npm run dev
 | POST | `/api/comments/query` | ✗ | body: `{ userName }`(兼容旧接口) |
 | POST | `/api/comments` | ✓ | body: `{ content }`(不绑定文章) |
 
-### AI 助手(全部需登录)
+### AI 助手与 Agent(全部需登录)
 | Method | Path | 说明 |
 |--------|------|------|
 | POST   | `/api/ai/chat` | body: `{ content }`;从 JWT 取 userId |
 | GET    | `/api/ai/history` | 拉取当前用户历史对话 |
 | DELETE | `/api/ai/history` | 清空当前用户对话 |
+| POST   | `/api/agent/stream` | SSE;body: `{ message, context?: { jobId } }` |
+| GET    | `/api/agent/history` | 拉取 Agent 对话历史和工具轨迹 |
+| DELETE | `/api/agent/history` | 清空 Agent 对话历史 |
+| POST   | `/api/agent/actions/confirm` | 确认高风险工具,如投递岗位 |
+
+## Agent 架构
+
+`src/agent/` 把原来的 AI 对话拆成 5 个可讲清楚的模块:
+
+- `prompt.js`:系统提示词,限定它是校园服务/就业助手。
+- `memoryService.js`:按用户加载近期对话,并把 assistant metadata 存成工具轨迹。
+- `toolRegistry.js`:统一登记工具 schema、handler、展示摘要和确认策略。
+- `runner.js`:OpenAI tool calling 循环;失败时切到 mock agent,保证演示可用。
+- `traceService.js`:统一 SSE 事件,前端可以逐步渲染思考、工具调用、结果和最终回答。
+
+工具调用结果统一返回:
+```json
+{
+  "ok": true,
+  "data": {},
+  "display": { "summary": "找到 5 个岗位" }
+}
+```
+
+SSE 事件约定:
+
+| type | 用途 |
+|------|------|
+| `thinking` | Agent 开始一轮推理 |
+| `tool_call` | 即将调用业务工具 |
+| `tool_result` | 工具完成,含 `ok/summary/result` |
+| `action_required` | 需要用户确认的高风险动作,如 `apply_job` |
+| `final` | 最终自然语言回答 |
+| `mock_fallback` | OpenAI 不可用时切到本地规则兜底 |
+
+业务集成示例:
+- 岗位详情页跳转 `/agent?jobId=12&prompt=为什么这个岗位适合我`。
+- 前端向 `/api/agent/stream` 发送 `{ message, context: { jobId: 12 } }`。
+- `runner` 把 jobId 写入上下文提示,模型优先调用 `get_job_detail` 和 `get_my_profile`,再输出匹配理由。
 
 ### 聊天室(WebSocket)
 | Method | Path | 说明 |

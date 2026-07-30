@@ -9,10 +9,11 @@
  * demo 效果不打折。
  */
 
-const { getTool } = require('./agentTools');
+const { getTool, unwrapToolData } = require('../agent/toolRegistry');
 
-function classifyIntent(text) {
+function classifyIntent(text, context = {}) {
   const s = String(text || '').toLowerCase();
+  if (context.jobId && /适合|匹配|岗位|投递|留言|收藏|对比|为什么/.test(s)) return 'context_job';
   if (/推荐|最匹配|适合我|适合的|给我几个|来几个/.test(s)) return 'recommend';
   if (/收藏|收藏夹|标记/.test(s)) return 'favorites';
   if (/投递|投过|申请了|投了/.test(s)) return 'applications';
@@ -52,8 +53,8 @@ function guessCity(text) {
  * @param {string} userMessage
  * @param {(event) => void} onEvent
  */
-async function runMockAgent(userId, userMessage, onEvent) {
-  const intent = classifyIntent(userMessage);
+async function runMockAgent(userId, userMessage, onEvent, context = {}) {
+  const intent = classifyIntent(userMessage, context);
   const executedCalls = [];
 
   async function callTool(name, args = {}) {
@@ -66,12 +67,19 @@ async function runMockAgent(userId, userMessage, onEvent) {
     }
     try {
       const result = await tool.handler(args, { userId });
-      onEvent({ type: 'tool_result', name, result });
-      executedCalls.push({ name, args, result });
-      return { result };
+      const data = unwrapToolData(result);
+      onEvent({
+        type: 'tool_result',
+        name,
+        ok: true,
+        summary: result?.display?.summary,
+        result,
+      });
+      executedCalls.push({ name, args, result: data, rawResult: result });
+      return { result: data };
     } catch (err) {
       const msg = err.message || String(err);
-      onEvent({ type: 'tool_result', name, error: msg });
+      onEvent({ type: 'tool_result', name, ok: false, summary: msg, error: msg });
       executedCalls.push({ name, args, error: msg });
       return { error: msg };
     }
@@ -83,7 +91,7 @@ async function runMockAgent(userId, userMessage, onEvent) {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   await wait(400);
 
-  let finalText = '';
+  let finalText;
 
   if (intent === 'greeting') {
     await callTool('get_my_profile');
@@ -105,6 +113,23 @@ async function runMockAgent(userId, userMessage, onEvent) {
       '',
       '如果你想让匹配度更准,记得去「我的主页」补齐画像 👀',
     ].filter(Boolean).join('\n');
+  } else if (intent === 'context_job') {
+    const jobId = Number(context.jobId);
+    await callTool('get_job_detail', { id: jobId });
+    await callTool('get_my_profile');
+    const job = executedCalls[0]?.result || {};
+    const profile = executedCalls[1]?.result || {};
+    const interests = profile.interests?.length ? profile.interests.join(' / ') : '暂未填写';
+    finalText = [
+      `我先看了这个岗位和你的画像。目标岗位是 **${job.company || '未知公司'} · ${job.title || `岗位 ${jobId}`}**。`,
+      '',
+      `你的方向/技能线索: ${profile.career_direction || '未填写方向'}; 兴趣技能: ${interests}。`,
+      '',
+      '可以这样准备:',
+      `1. 投递留言先对齐岗位关键词: ${(job.tags || []).slice(0, 4).join(' / ') || '项目经历、学习能力、岗位兴趣'}。`,
+      `2. 简历项目描述要写清楚"做了什么、用了什么技术、结果如何"。`,
+      '3. 如果要投递,我会先让你确认,不会直接替你提交。',
+    ].join('\n');
   } else if (intent === 'recommend') {
     await callTool('recommend_jobs', { limit: 5 });
     const items = executedCalls[0]?.result || [];

@@ -238,12 +238,54 @@ CREATE TABLE IF NOT EXISTS `message` (
 CREATE TABLE IF NOT EXISTS `chatmessages` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `user_id` VARCHAR(64) NOT NULL,
-  `type` ENUM('user', 'ai') NOT NULL,
+  `session_id` VARCHAR(64) DEFAULT NULL,
+  `type` ENUM('user', 'assistant', 'ai') NOT NULL,
   `text` TEXT NOT NULL,
+  `metadata` JSON DEFAULT NULL,
   `timestamp` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `idx_user_time` (`user_id`, `timestamp`)
+  KEY `idx_user_time` (`user_id`, `timestamp`),
+  KEY `idx_session` (`session_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 已存在的旧 chatmessages 补 Agent 历史字段
+DROP PROCEDURE IF EXISTS `upgrade_chatmessages_for_agent`;
+DELIMITER $$
+CREATE PROCEDURE `upgrade_chatmessages_for_agent`()
+BEGIN
+  DECLARE db VARCHAR(64) DEFAULT DATABASE();
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'chatmessages' AND COLUMN_NAME = 'session_id'
+  ) THEN
+    ALTER TABLE `chatmessages` ADD COLUMN `session_id` VARCHAR(64) DEFAULT NULL AFTER `user_id`;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'chatmessages' AND COLUMN_NAME = 'type'
+  ) THEN
+    ALTER TABLE `chatmessages` MODIFY COLUMN `type` ENUM('user', 'assistant', 'ai') NOT NULL;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'chatmessages' AND COLUMN_NAME = 'metadata'
+  ) THEN
+    ALTER TABLE `chatmessages` ADD COLUMN `metadata` JSON DEFAULT NULL AFTER `text`;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'chatmessages' AND INDEX_NAME = 'idx_session'
+  ) THEN
+    ALTER TABLE `chatmessages` ADD INDEX `idx_session` (`session_id`);
+  END IF;
+END$$
+DELIMITER ;
+CALL `upgrade_chatmessages_for_agent`();
+DROP PROCEDURE `upgrade_chatmessages_for_agent`;
 
 -- 清理旧表(如存在)
 DROP TABLE IF EXISTS `recommendlist`;

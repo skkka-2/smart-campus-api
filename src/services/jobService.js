@@ -80,6 +80,14 @@ function scoreInterests(interests, tags) {
   return Math.min(20, hits * 8);
 }
 
+function getInterestHits(interests, tags) {
+  if (!Array.isArray(interests) || !Array.isArray(tags)) return [];
+  const tagMap = new Map(tags.map((tag) => [String(tag).toLowerCase(), tag]));
+  return interests
+    .filter((interest) => tagMap.has(String(interest).toLowerCase()))
+    .map((interest) => tagMap.get(String(interest).toLowerCase()));
+}
+
 /** 综合打分 */
 function computeMatchScore(user, job) {
   if (!user || (!user.major && !user.career_direction)) return null;
@@ -90,6 +98,64 @@ function computeMatchScore(user, job) {
     scoreDegree(user.grade, job.degree_required) +
     scoreInterests(user.interests, job.tags);
   return Math.min(100, Math.max(0, Math.round(s)));
+}
+
+function computeMatchExplanation(user, job) {
+  if (!user) {
+    return {
+      match_score: null,
+      match_reasons: ['登录并完善画像后可获得个性化匹配理由'],
+      match_gaps: ['缺少用户画像,暂时只能按岗位热度推荐'],
+    };
+  }
+
+  const reasons = [];
+  const gaps = [];
+
+  if (user.career_direction && user.career_direction === job.category) {
+    reasons.push(`职业方向匹配:${user.career_direction}`);
+  } else if (user.career_direction) {
+    gaps.push(`意向方向是${user.career_direction},岗位方向是${job.category}`);
+  } else {
+    gaps.push('画像缺少职业方向');
+  }
+
+  const majorScore = scoreMajor(user.major, job.category);
+  if (user.major && majorScore > 0) {
+    reasons.push(`专业背景相关:${user.major}`);
+  } else if (!user.major) {
+    gaps.push('画像缺少专业信息');
+  }
+
+  if (user.preferred_city && user.preferred_city === job.city) {
+    reasons.push(`意向城市匹配:${job.city}`);
+  } else if (user.preferred_city) {
+    gaps.push(`意向城市是${user.preferred_city},岗位城市是${job.city}`);
+  }
+
+  const interestHits = getInterestHits(user.interests, job.tags);
+  if (interestHits.length) {
+    reasons.push(`兴趣/技能标签命中:${interestHits.slice(0, 3).join(' / ')}`);
+  } else if (Array.isArray(job.tags) && job.tags.length) {
+    gaps.push(`岗位需要${job.tags.slice(0, 3).join(' / ')},画像标签暂未体现`);
+  }
+
+  const degreeScore = scoreDegree(user.grade, job.degree_required);
+  if (user.grade && degreeScore >= 10) {
+    reasons.push(`学历/年级满足要求:${job.degree_required}`);
+  } else if (!user.grade) {
+    gaps.push('画像缺少年级信息');
+  }
+
+  if (!reasons.length) {
+    reasons.push('岗位热度和基础条件较优,可作为备选关注');
+  }
+
+  return {
+    match_score: computeMatchScore(user, job),
+    match_reasons: reasons,
+    match_gaps: gaps,
+  };
 }
 
 const jobService = {
@@ -113,7 +179,7 @@ const jobService = {
 
     const enriched = items.map((job) => ({
       ...job,
-      match_score: computeMatchScore(user, job),
+      ...computeMatchExplanation(user, job),
       favorited: favoriteIds.has(job.id),
       applied: applications.get(job.id) || null,
     }));
@@ -154,7 +220,7 @@ const jobService = {
     return {
       job: {
         ...job,
-        match_score: computeMatchScore(user, job),
+        ...computeMatchExplanation(user, job),
         favorited,
         applied,
       },
@@ -214,10 +280,13 @@ const jobService = {
       const user = await userRepository.findProfileById(userId);
       return items.map((job) => ({
         ...job,
-        match_score: computeMatchScore(user, job),
+        ...computeMatchExplanation(user, job),
       }));
     }
-    return items;
+    return items.map((job) => ({
+      ...job,
+      ...computeMatchExplanation(null, job),
+    }));
   },
 
   /** 筛选选项 */

@@ -4,7 +4,7 @@ const { BizError } = require('../utils/response');
 const agentController = {
   /**
    * POST /api/agent/stream
-   * body: { message: string }
+   * body: { message: string, context?: { jobId?: number } }
    *
    * 响应:Server-Sent Events (text/event-stream)
    *   每个事件形如:
@@ -14,7 +14,7 @@ const agentController = {
    * 事件 type:thinking / tool_call / tool_result / final / error
    */
   async stream(ctx) {
-    const { message } = ctx.request.body || {};
+    const { message, context } = ctx.request.body || {};
     if (!message) throw BizError.badRequest('消息不能为空');
 
     const res = ctx.res;
@@ -42,7 +42,7 @@ const agentController = {
     try {
       await agentService.runAgent(ctx.state.user.id, message, (evt) => {
         if (!aborted) send(evt);
-      });
+      }, context);
     } catch (err) {
       console.error('[agent] runAgent error:', err);
       send({ type: 'error', message: err.message || 'agent 内部错误' });
@@ -61,6 +61,13 @@ const agentController = {
   async clear(ctx) {
     const data = await agentService.clearHistory(ctx.state.user.id);
     ctx.success(data, '已清空');
+  },
+
+  /** POST /api/agent/actions/confirm */
+  async confirmAction(ctx) {
+    const { action, payload } = ctx.request.body || {};
+    const data = await agentService.confirmAction(ctx.state.user.id, { action, payload });
+    ctx.success(data);
   },
 };
 

@@ -9,5 +9,6 @@ router.use(requireAuth);
 router.post('/stream', agentController.stream);
 router.get('/history', agentController.history);
 router.delete('/history', agentController.clear);
+router.post('/actions/confirm', agentController.confirmAction);
 
 module.exports = router;
