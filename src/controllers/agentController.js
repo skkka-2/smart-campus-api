@@ -14,7 +14,7 @@ const agentController = {
    * 事件 type:thinking / tool_call / tool_result / final / error
    */
   async stream(ctx) {
-    const { message, context } = ctx.request.body || {};
+    const { message, context, sessionId } = ctx.request.body || {};
     if (!message) throw BizError.badRequest('消息不能为空');
 
     const res = ctx.res;
@@ -44,7 +44,7 @@ const agentController = {
     try {
       await agentService.runAgent(ctx.state.user.id, message, (evt) => {
         if (!abortController.signal.aborted) send(evt);
-      }, context, abortController.signal);
+      }, context, abortController.signal, sessionId);
     } catch (err) {
       // AbortError 不是错误，不报错、不发 error 事件（客户端已断开）
       if (err.name === 'AbortError' || abortController.signal.aborted) {

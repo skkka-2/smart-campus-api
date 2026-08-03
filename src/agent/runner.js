@@ -146,18 +146,20 @@ async function createStreamingCompletion({
 }
 
 async function runAgent({
-  userId, message, context, onEvent, signal,
+  userId, message, context, onEvent, signal, sessionId,
 }) {
   if (!message || !message.trim()) {
     throw BizError.badRequest('消息不能为空');
   }
 
-  const sessionId = String(Date.now());
+  // sessionId 由前端生成传入（语义：一次对话）。
+  // 缺失则后端兜底生成，保证旧前端也能工作。
+  const resolvedSessionId = sessionId || `gen-${Date.now()}`;
   const mock = FORCE_MOCK || !config.openai.apiKey;
   return agentTracer.withAgentRun({
-    userId, sessionId, message, context, mock,
+    userId, sessionId: resolvedSessionId, message, context, mock,
   }, (runSpan) => runAgentWithSession({
-    userId, message, context, onEvent, sessionId, runSpan, signal,
+    userId, message, context, onEvent, sessionId: resolvedSessionId, runSpan, signal,
   }));
 }
 
@@ -182,7 +184,7 @@ async function runAgentWithSession({
   const history = await agentTracer.withSpan('agent.memory.load', {
     'agent.session_id': sessionId,
     'agent.user_id_hash': require('../observability/redactor').hashUserId(userId),
-  }, () => memoryService.loadRecentMessages({ userId }));
+  }, () => memoryService.loadRecentMessages({ userId, sessionId }));
   const intent = await extractIntent({
     userId,
     message,
