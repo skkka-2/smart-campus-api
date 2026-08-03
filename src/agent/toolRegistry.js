@@ -5,6 +5,11 @@ const jobApplicationRepository = require('../repositories/jobApplicationReposito
 const jobService = require('../services/jobService');
 const safetyPolicy = require('./safetyPolicy');
 
+// 单次返回岗位上限。description 用模板字符串引用它，常量改了描述自动同步（学自 pi bash.ts:57）。
+const LIST_JOBS_MAX = 20;
+// 工具结果里长文本字段的截断上限（防一个岗位描述吃掉几 K token，学自 openclaw 的 no-unbounded-items）。
+const MAX_FIELD_CHARS = 800;
+
 function toolOk(data, { title, summary } = {}) {
   return {
     ok: true,
@@ -14,6 +19,12 @@ function toolOk(data, { title, summary } = {}) {
       summary: summary || summarizeData(data),
     },
   };
+}
+
+// 截断长文本字段，告知原文长度（学自 pi bash.ts 的截断信息写法）。
+function truncateField(text, max = MAX_FIELD_CHARS) {
+  if (!text || typeof text !== 'string' || text.length <= max) return text;
+  return `${text.slice(0, max)}\n…（已截断，原文共 ${text.length} 字）`;
 }
 
 function summarizeData(data) {
@@ -50,17 +61,13 @@ async function getMyProfile(_args, { userId }) {
 }
 
 async function listJobs({ keyword, city, category, workType, degree, salaryMin, limit = 10 } = {}) {
-  const capped = Math.min(20, Math.max(1, Number(limit) || 10));
-  const items = await jobRepository.list({
-    keyword,
-    city,
-    category,
-    workType,
-    degree,
-    salaryMin,
-    offset: 0,
-    limit: capped,
-  });
+  const capped = Math.min(LIST_JOBS_MAX, Math.max(1, Number(limit) || 10));
+  const filters = { keyword, city, category, workType, degree, salaryMin };
+  // 并行查列表和总数：count 用同样的 where 条件（jobRepository.count 已存在）
+  const [items, total] = await Promise.all([
+    jobRepository.list({ ...filters, offset: 0, limit: capped }),
+    jobRepository.count(filters),
+  ]);
   const data = items.map((job) => ({
     id: job.id,
     title: job.title,
@@ -74,10 +81,19 @@ async function listJobs({ keyword, city, category, workType, degree, salaryMin, 
     apply_count: job.apply_count,
     is_hot: !!job.is_hot,
   }));
-  return toolOk(data, {
-    title: '搜索岗位库',
-    summary: `找到 ${data.length} 个岗位`,
-  });
+  const returned = data.length;
+  const truncated = total > returned;
+  // 学自 pi bash.ts 的截断信息：告知总量、返回条数、是否截断，
+  // 模型才不会把"返回 20 个"误当成"总共 20 个"。
+  return toolOk(
+    { items: data, total, returned, truncated },
+    {
+      title: '搜索岗位库',
+      summary: truncated
+        ? `共匹配 ${total} 个岗位，返回前 ${returned} 个。需要更多请缩小筛选条件或调大 limit（上限 ${LIST_JOBS_MAX}）。`
+        : `共匹配 ${total} 个岗位，已全部返回。`,
+    },
+  );
 }
 
 async function getJobDetail({ id }) {
@@ -93,9 +109,9 @@ async function getJobDetail({ id }) {
     work_type: job.work_type,
     degree_required: job.degree_required,
     experience_required: job.experience_required,
-    description: job.description,
-    requirements: job.requirements,
-    benefits: job.benefits,
+    description: truncateField(job.description),
+    requirements: truncateField(job.requirements),
+    benefits: truncateField(job.benefits),
     tags: job.tags,
     apply_count: job.apply_count,
     view_count: job.view_count,
@@ -197,7 +213,7 @@ const TOOLS = [
   },
   {
     name: 'list_jobs',
-    description: '按条件搜索岗位池。返回精简字段列表(id/title/company/city/salary/category 等)。要看某个岗位的完整描述/要求/福利,再调 get_job_detail。',
+    description: `按条件搜索岗位池。返回精简字段列表(id/title/company/city/salary/category 等)。单次最多返回 ${LIST_JOBS_MAX} 条,返回值的 total 字段是实际匹配总数——若 truncated 为 true,说明还有更多结果,不要向用户声称这是全部。要看某个岗位的完整描述/要求/福利,再调 get_job_detail。`,
     parameters: {
       type: 'object',
       properties: {
@@ -218,7 +234,7 @@ const TOOLS = [
           enum: ['专科', '本科', '硕士', '博士', '不限'],
         },
         salaryMin: { type: 'number', description: '最低薪资;实习为 元/天,校招为 元/月' },
-        limit: { type: 'integer', description: '返回条数上限,默认 10,最大 20' },
+        limit: { type: 'integer', description: `返回条数上限,默认 10,最大 ${LIST_JOBS_MAX}` },
       },
     },
     handler: listJobs,

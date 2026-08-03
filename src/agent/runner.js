@@ -72,7 +72,7 @@ async function createStreamingCompletion({
     'agent.session_id': sessionId,
     'gen_ai.system': config.openai.provider,
     'gen_ai.request.model': config.openai.model,
-    'gen_ai.request.max_tokens': 800,
+    'gen_ai.request.max_tokens': 2000,
     'gen_ai.request.message_count': messages.length,
     'agent.tool.schema_count': tools.length,
     'gen_ai.request.stream': true,
@@ -82,7 +82,7 @@ async function createStreamingCompletion({
       messages,
       tools,
       tool_choice: 'auto',
-      max_tokens: 800,
+      max_tokens: 2000,
       stream: true,
     }, { signal });
 
@@ -204,11 +204,14 @@ async function runAgentWithSession({
       jsonMode: intent.jsonMode,
     }));
   }
+  // 排序原则（学自 grok-build 的 KV-cache 前缀稳定性）：越稳定的越靠前。
+  // 之前 buildIntentMessages 插在 history 之前，intent 每轮变化 → 它后面的 history 全部 cache miss。
+  // 现在把动态内容移到尾部：稳定前缀 [system, context, history] + 动态尾部 [intent, user]。
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     ...buildContextMessages(context),
-    ...buildIntentMessages(intent),
     ...history,
+    ...buildIntentMessages(intent),
     { role: 'user', content: message },
   ];
 
@@ -299,6 +302,20 @@ async function runAgentWithSession({
     if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
       finalText = (assistantMsg.content || finalText || '').trim();
       break;
+    }
+
+    // 截断检测：finish_reason === 'length' 表示输出撞 max_tokens 被截断。
+    // 流式拼出来的 tool_call arguments 可能恰好还是合法 JSON、也能通过 schema 校验，
+    // 但语义上是残缺的（如 apply_job 的 message 被截在半句）。
+    // 学自 pi agent-loop.ts:212 的 failToolCallsFromTruncatedMessage：整批失败回错，
+    // 让模型用完整参数重发，不执行可能残缺的调用。
+    if (completion.finishReason === 'length') {
+      const truncMsg = (name) =>
+        `工具调用 "${name}" 未执行：本次输出触达 token 上限，参数可能被截断。请用完整参数重新调用。`;
+      for (const call of assistantMsg.tool_calls) {
+        emitToolError(call, truncMsg(call.function.name));
+      }
+      continue;
     }
 
     for (const call of assistantMsg.tool_calls) {
