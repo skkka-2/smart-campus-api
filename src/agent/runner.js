@@ -9,6 +9,7 @@ const { runMockAgent } = require('../services/mockAgent');
 const { getClient } = require('./llmClient');
 const { buildIntentMessages, extractIntent } = require('./intentExtractor');
 const { validateToolArguments } = require('./toolValidator');
+const { estimateContextTokens } = require('./tokenBudget');
 
 const MAX_STEPS = 6;
 const FORCE_MOCK = String(process.env.AGENT_MOCK || '').toLowerCase() === 'true';
@@ -84,13 +85,20 @@ async function createStreamingCompletion({
       tool_choice: 'auto',
       max_tokens: 2000,
       stream: true,
+      // 流式拿 usage 必须开。chatanywhere/openai 支持；zhipu_glm 等可能忽略——
+      // 忽略时 usage 为 null，调用方走纯估算降级（tokenBudget.estimateContextTokens 已处理）。
+      stream_options: { include_usage: true },
     }, { signal });
 
     let content = '';
     let finishReason = null;
+    let usage = null;
     const toolCalls = [];
 
     for await (const chunk of stream) {
+      // usage 在最后一个 chunk（choices 为空的那条）
+      if (chunk.usage) usage = chunk.usage;
+
       const choice = chunk.choices?.[0];
       if (!choice) continue;
       if (choice.finish_reason) finishReason = choice.finish_reason;
@@ -124,12 +132,17 @@ async function createStreamingCompletion({
         'gen_ai.response.finish_reason': finishReason || '',
         'gen_ai.response.content_length': content.length,
         'agent.tool.call_count': normalizedToolCalls.length,
+        // 有 usage 用真实值，没有就 null（Langfuse 上能看到 provider 是否支持）
+        'gen_ai.usage.prompt_tokens': usage?.prompt_tokens ?? null,
+        'gen_ai.usage.completion_tokens': usage?.completion_tokens ?? null,
+        'gen_ai.usage.total_tokens': usage?.total_tokens ?? null,
       });
     }
     agentTracer.addEvent(runSpan, 'agent.generation_stream_done', {
       finishReason,
       contentLength: content.length,
       toolCalls: normalizedToolCalls.length,
+      hasUsage: !!usage,
     });
 
     return {
@@ -139,6 +152,7 @@ async function createStreamingCompletion({
         ...(normalizedToolCalls.length ? { tool_calls: normalizedToolCalls } : {}),
       },
       finishReason,
+      usage,
     };
   }, {
     asType: 'generation',
@@ -220,6 +234,10 @@ async function runAgentWithSession({
   const executedCalls = [];
   let finalText = '';
 
+  // 记录最后一次 API 真实 usage 及其对应的 messages 下标，供混合估算用（P1-2）。
+  let lastUsage = null;
+  let lastUsageIndex = null;
+
   // 工具未找到 / 参数校验失败时统一回错给模型。
   // 闭包捕获 messages / executedCalls / onEvent / runSpan，避免参数列表过长。
   function emitToolError(call, errorMessage) {
@@ -298,6 +316,20 @@ async function runAgentWithSession({
 
     const assistantMsg = completion.message;
     messages.push(assistantMsg);
+
+    // P1-2：记录真实 usage，估算当前上下文 token，写进 span 供 Langfuse 观测。
+    // 混合估算：真实 prompt_tokens（基准）+ 之后新增消息的估算。
+    // provider 不支持 stream_options 时 usage 为 null，走纯估算降级。
+    if (completion.usage?.prompt_tokens != null) {
+      lastUsage = completion.usage;
+      lastUsageIndex = messages.length - 1;
+    }
+    const contextTokens = estimateContextTokens(messages, lastUsage, lastUsageIndex);
+    agentTracer.addEvent(runSpan, 'agent.context_budget', {
+      contextTokens,
+      hasRealUsage: !!lastUsage,
+      promptTokens: lastUsage?.prompt_tokens ?? null,
+    });
 
     if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
       finalText = (assistantMsg.content || finalText || '').trim();
