@@ -124,7 +124,9 @@ async function getJobDetail({ id }) {
 
 async function recommendJobs({ limit = 5 } = {}, { userId }) {
   const capped = Math.min(10, Math.max(1, Number(limit) || 5));
-  const items = await jobService.recommend(userId, { limit: capped });
+  // 用 recommendWithProfile：拿到推荐结果 + 用到的画像字段。
+  // 模型拿到 based_on 后不必再调 get_my_profile，省一整轮往返（学自 openclaw）。
+  const { items, profile } = await jobService.recommendWithProfile(userId, { limit: capped });
   const data = items.map((job) => ({
     id: job.id,
     title: job.title,
@@ -137,10 +139,25 @@ async function recommendJobs({ limit = 5 } = {}, { userId }) {
     match_gaps: job.match_gaps || [],
     tags: job.tags,
   }));
-  return toolOk(data, {
-    title: '基于画像推荐',
-    summary: `推荐 ${data.length} 个匹配岗位`,
-  });
+  return toolOk(
+    {
+      items: data,
+      // 推荐所依据的画像字段 —— 模型不必再调 get_my_profile
+      based_on: {
+        major: profile?.major ?? null,
+        career_direction: profile?.career_direction ?? null,
+        preferred_city: profile?.preferred_city ?? null,
+        grade: profile?.grade ?? null,
+      },
+      profile_complete: !!(profile?.major && profile?.career_direction),
+    },
+    {
+      title: '基于画像推荐',
+      summary: profile?.career_direction
+        ? `按「${profile.career_direction} / ${profile.preferred_city || '不限城市'}」推荐了 ${data.length} 个岗位。`
+        : `画像不完整（缺方向），已按通用热度推荐 ${data.length} 个岗位。建议提示用户补齐 /profile。`,
+    },
+  );
 }
 
 async function listMyFavorites(_args, { userId }) {
@@ -255,7 +272,7 @@ const TOOLS = [
   },
   {
     name: 'recommend_jobs',
-    description: '基于当前用户画像做智能推荐,返回带匹配度分数的岗位列表。用户问"最适合我的"、"推荐几个"时优先用这个。',
+    description: '基于当前用户画像做智能推荐,返回带匹配度分数的岗位列表,并在 based_on 字段里附带本次推荐所依据的画像字段。调用这个之后不需要再调 get_my_profile。用户问"最适合我的"、"推荐几个"时优先用这个。',
     parameters: {
       type: 'object',
       properties: { limit: { type: 'integer', description: '默认 5,最大 10' } },

@@ -267,17 +267,19 @@ const jobService = {
 
   /** 为你推荐 —— 基于画像 */
   async recommend(userId, { limit = 6 } = {}) {
+    // 修复：之前 findProfileById 查了两次（273 和 280），复用一次的结果。
+    // 返回值不变（仍是数组），保证 /api/jobs/recommend 不被破坏。
+    let user = null;
     let category = null;
     let city = null;
     if (userId) {
-      const user = await userRepository.findProfileById(userId);
+      user = await userRepository.findProfileById(userId);
       category = user?.career_direction || null;
       city = user?.preferred_city || null;
     }
     const items = await jobRepository.recommendForUser({ category, city, limit });
 
-    if (userId) {
-      const user = await userRepository.findProfileById(userId);
+    if (user) {
       return items.map((job) => ({
         ...job,
         ...computeMatchExplanation(user, job),
@@ -287,6 +289,20 @@ const jobService = {
       ...job,
       ...computeMatchExplanation(null, job),
     }));
+  },
+
+  /**
+   * 供 agent 工具使用：推荐的同时返回用到的画像字段。
+   * 不改 recommend 的对外返回值（它被 /api/jobs/recommend 直接用）。
+   * 学自 openclaw 的 "tool result is prompt, not a bare ack"：
+   *   把模型下一步需要的画像一起返回，省掉模型再调 get_my_profile 的一整轮往返。
+   */
+  async recommendWithProfile(userId, { limit = 6 } = {}) {
+    const items = await this.recommend(userId, { limit });
+    const profile = userId
+      ? await userRepository.findProfileById(userId)
+      : null;
+    return { items, profile };
   },
 
   /** 筛选选项 */
