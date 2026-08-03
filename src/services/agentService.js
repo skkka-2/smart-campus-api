@@ -1,11 +1,12 @@
 const agent = require('../agent');
 
-async function runAgent(userId, userMessage, onEvent, context) {
+async function runAgent(userId, userMessage, onEvent, context, signal) {
   return agent.runAgent({
     userId,
     message: userMessage,
     onEvent,
     context,
+    signal,
   });
 }
 

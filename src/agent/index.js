@@ -5,10 +5,10 @@ const { validateToolArgsObject } = require('./toolValidator');
 const { BizError } = require('../utils/response');
 
 async function runAgent({
-  userId, message, onEvent, context,
+  userId, message, onEvent, context, signal,
 }) {
   return runner.runAgent({
-    userId, message, onEvent, context,
+    userId, message, onEvent, context, signal,
   });
 }
 

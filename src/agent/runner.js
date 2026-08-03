@@ -66,7 +66,7 @@ function applyToolCallDelta(toolCalls, deltaCall) {
 }
 
 async function createStreamingCompletion({
-  client, messages, tools, onDelta, sessionId, runSpan,
+  client, messages, tools, onDelta, sessionId, runSpan, signal,
 }) {
   return agentTracer.withSpan('gen_ai.chat.completions', {
     'agent.session_id': sessionId,
@@ -84,7 +84,7 @@ async function createStreamingCompletion({
       tool_choice: 'auto',
       max_tokens: 800,
       stream: true,
-    });
+    }, { signal });
 
     let content = '';
     let finishReason = null;
@@ -146,7 +146,7 @@ async function createStreamingCompletion({
 }
 
 async function runAgent({
-  userId, message, context, onEvent,
+  userId, message, context, onEvent, signal,
 }) {
   if (!message || !message.trim()) {
     throw BizError.badRequest('消息不能为空');
@@ -157,12 +157,12 @@ async function runAgent({
   return agentTracer.withAgentRun({
     userId, sessionId, message, context, mock,
   }, (runSpan) => runAgentWithSession({
-    userId, message, context, onEvent, sessionId, runSpan,
+    userId, message, context, onEvent, sessionId, runSpan, signal,
   }));
 }
 
 async function runAgentWithSession({
-  userId, message, context, onEvent, sessionId, runSpan,
+  userId, message, context, onEvent, sessionId, runSpan, signal,
 }) {
   await memoryService.saveMessage({ userId, sessionId, role: 'user', text: message });
 
@@ -246,6 +246,9 @@ async function runAgentWithSession({
   }
 
   for (let step = 0; step < MAX_STEPS; step += 1) {
+    // ① 每轮开头检查中断（学自 pi agent-loop.ts 的 signal 检查点）
+    if (signal?.aborted) break;
+
     onEvent(trace.createThinkingEvent({ step }));
     agentTracer.addEvent(runSpan, 'agent.thinking', { step });
 
@@ -257,12 +260,19 @@ async function runAgentWithSession({
         tools,
         sessionId,
         runSpan,
+        signal,
         onDelta(delta) {
           finalText += delta;
           onEvent(trace.createDeltaEvent({ content: delta }));
         },
       });
     } catch (err) {
+      // 中断不是错误：不报错、不走 mock fallback、不发 error 事件
+      // （学自 pi/openclaw：AbortError 要和真实错误区分，否则会误触发兜底）
+      if (err.name === 'AbortError' || signal?.aborted) {
+        agentTracer.addEvent(runSpan, 'agent.aborted', { step });
+        break;
+      }
       if (step === 0) {
         console.warn('[agent] OpenAI 首步失败,切到 mock 兜底:', err.message);
         onEvent(trace.createMockFallbackEvent({ reason: err.message }));
@@ -290,6 +300,9 @@ async function runAgentWithSession({
     }
 
     for (const call of assistantMsg.tool_calls) {
+      // ③ 每个工具执行前检查中断
+      if (signal?.aborted) break;
+
       const id = call.id;
       const name = call.function.name;
       const tool = toolRegistry.getToolDefinition(name);
@@ -395,6 +408,24 @@ async function runAgentWithSession({
         summary: result?.display?.summary || errorStr || '',
       });
     }
+  }
+
+  // 中断分支：客户端已断开，不发 final 事件（收不到），但保存一条 aborted 消息。
+  // 学自 pi/openclaw：transcript 末尾不能留孤立的 tool_call（无配对 tool_result），
+  // 否则下次续跑 OpenAI API 直接报错。
+  if (signal?.aborted) {
+    await memoryService.saveMessage({
+      userId,
+      sessionId,
+      role: 'assistant',
+      text: finalText || '(已中断)',
+      metadata: { aborted: true, toolCalls: executedCalls.length },
+    });
+    agentTracer.addEvent(runSpan, 'agent.final', {
+      aborted: true,
+      toolCalls: executedCalls.length,
+    });
+    return { finalText, toolCalls: executedCalls, aborted: true };
   }
 
   if (!finalText) finalText = '(我暂时不知道怎么回答,再问一次试试?)';

@@ -35,17 +35,24 @@ const agentController = {
       } catch { /* client 断开 */ }
     };
 
-    // 客户端断开时中止 loop
-    let aborted = false;
-    ctx.req.on('close', () => { aborted = true; });
+    // 客户端断开时真中止 loop：AbortSignal 贯穿到 OpenAI SDK 和工具执行。
+    // 旧的 `aborted` 只挡住 send()，LLM 调用和工具继续跑、DB 继续写，
+    // 最坏情况是用户关了页面但 apply_job 仍投递成功（不可见副作用）。
+    const abortController = new AbortController();
+    ctx.req.on('close', () => { abortController.abort(); });
 
     try {
       await agentService.runAgent(ctx.state.user.id, message, (evt) => {
-        if (!aborted) send(evt);
-      }, context);
+        if (!abortController.signal.aborted) send(evt);
+      }, context, abortController.signal);
     } catch (err) {
-      console.error('[agent] runAgent error:', err);
-      send({ type: 'error', message: err.message || 'agent 内部错误' });
+      // AbortError 不是错误，不报错、不发 error 事件（客户端已断开）
+      if (err.name === 'AbortError' || abortController.signal.aborted) {
+        console.warn('[agent] stream aborted by client');
+      } else {
+        console.error('[agent] runAgent error:', err);
+        send({ type: 'error', message: err.message || 'agent 内部错误' });
+      }
     } finally {
       try { res.end(); } catch { /* noop */ }
     }
