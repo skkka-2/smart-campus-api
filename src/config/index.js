@@ -46,6 +46,9 @@ const config = {
     model: process.env.OPENAI_MODEL || 'gpt-3.5-turbo',
     maxTokens: parseInt10(process.env.OPENAI_MAX_TOKENS, 512),
     provider: detectModelProvider(process.env.OPENAI_BASE_URL || 'https://api.chatanywhere.tech/v1'),
+    // 上下文窗口（token），用于压缩触发判断。gpt-3.5-turbo 默认 16K。
+    // 切小窗口模型时务必调小，否则会触发 openclaw 那种压缩死循环。
+    contextWindow: parseInt10(process.env.OPENAI_CONTEXT_WINDOW, 16000),
   },
 
   agent: {

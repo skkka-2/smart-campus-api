@@ -10,8 +10,13 @@ const { runMockAgent } = require('../services/mockAgent');
 const { getClient } = require('./llmClient');
 const { buildIntentMessages, extractIntent } = require('./intentExtractor');
 const { validateToolArguments } = require('./toolValidator');
-const { estimateContextTokens } = require('./tokenBudget');
-const { truncateOldToolResults } = require('./contextManager');
+const { estimateContextTokens, estimateText, shouldCompact } = require('./tokenBudget');
+const {
+  truncateOldToolResults,
+  findCompactionCutPoint,
+  buildSummaryPrompt,
+  assembleCompactedHistory,
+} = require('./contextManager');
 
 const MAX_STEPS = 6;
 const FORCE_MOCK = String(process.env.AGENT_MOCK || '').toLowerCase() === 'true';
@@ -66,6 +71,58 @@ function applyToolCallDelta(toolCalls, deltaCall) {
   if (deltaCall.type) target.type = deltaCall.type;
   if (deltaCall.function?.name) target.function.name += deltaCall.function.name;
   if (deltaCall.function?.arguments) target.function.arguments += deltaCall.function.arguments;
+}
+
+// P2-2c：摘要压缩。调一次 LLM 把旧历史总结成结构化摘要，重组 messages。
+// 学自 grok-build full-replace + assemble 顺序。失败不致命——原 messages 不变，继续跑。
+async function compactHistory({ client, messages, signal, runSpan }) {
+  const contextWindow = config.openai.contextWindow;
+  // 保留最近 keepRecentTokens 的原文，其余摘要
+  const keepRecentTokens = Math.floor(contextWindow * 0.25);
+  const { cutIndex } = findCompactionCutPoint(messages, keepRecentTokens, estimateText);
+  if (cutIndex <= 0) return false; // 没什么可压缩的
+
+  const toSummarize = messages.slice(0, cutIndex);
+  const recent = messages.slice(cutIndex);
+  // system + context 类消息（role=system）单独拎出来放前面
+  const systemMessages = toSummarize.filter((m) => m.role === 'system');
+  const nonSystemToSummarize = toSummarize.filter((m) => m.role !== 'system');
+
+  const prompt = buildSummaryPrompt(nonSystemToSummarize);
+  agentTracer.addEvent(runSpan, 'agent.compaction_start', {
+    messagesBefore: messages.length,
+    cutIndex,
+    keepRecentTokens,
+  });
+
+  try {
+    const resp = await client.chat.completions.create({
+      model: config.openai.model,
+      messages: [
+        { role: 'system', content: '你是会话压缩助手，只输出结构化摘要。' },
+        { role: 'user', content: prompt },
+      ],
+      max_tokens: 800,
+    }, { signal });
+    const summary = resp.choices?.[0]?.message?.content || '';
+    if (!summary) return false;
+
+    // 重组：[system+context, recent, 摘要(最末)]
+    const assembled = assembleCompactedHistory({ systemMessages, recentMessages: recent, summary });
+    messages.length = 0;
+    messages.push(...assembled);
+    agentTracer.addEvent(runSpan, 'agent.compaction_done', {
+      messagesAfter: messages.length,
+      summaryLength: summary.length,
+    });
+    return true;
+  } catch (err) {
+    // 压缩失败不致命：原 messages 不变，继续跑（学自 pi 的"宁可慢也不要崩"）
+    if (err.name === 'AbortError' || signal?.aborted) throw err;
+    agentTracer.addEvent(runSpan, 'agent.compaction_failed', { message: err.message });
+    console.warn('[agent] compaction failed, keep original messages:', err.message);
+    return false;
+  }
 }
 
 async function createStreamingCompletion({
@@ -331,6 +388,18 @@ async function runAgentWithSession({
     // 学自 openclaw 四态路由的"先截断后摘要"：免费、近乎无损（旧岗位列表本来就没用了）。
     // 短对话无影响（没有超过 2 轮的旧 tool result）。
     truncateOldToolResults(messages, { keepRounds: 2 });
+
+    // P2-2b/c：截断后若仍超阈值，调 LLM 摘要压缩。
+    // shouldCompact 含两段夹取防小窗口死循环（学 openclaw agent-settings.ts:52）。
+    const contextTokensBefore = estimateContextTokens(messages, lastUsage, lastUsageIndex);
+    if (shouldCompact(contextTokensBefore, config.openai.contextWindow)) {
+      const compacted = await compactHistory({ client, messages, signal, runSpan });
+      if (compacted) {
+        // 压缩后重置 usage 基准（历史变了，旧 usage 不再适用）
+        lastUsage = null;
+        lastUsageIndex = null;
+      }
+    }
 
     onEvent(trace.createThinkingEvent({ step }));
     agentTracer.addEvent(runSpan, 'agent.thinking', { step });

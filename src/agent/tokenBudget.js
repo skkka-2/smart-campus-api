@@ -56,4 +56,42 @@ function estimateContextTokens(messages, lastUsage, lastUsageIndex) {
   return lastUsage.prompt_tokens + trailing;
 }
 
-module.exports = { estimateText, estimateMessage, estimateContextTokens };
+// ===== 压缩触发判断 =====
+// 学自 openclaw 的两段夹取（agent-settings.ts:52）防小窗口死循环：
+//   默认 reserve 给大模型设的，小窗口模型（8K/4K）会因 promptBudget 为负导致
+//   任何 prompt 都判定溢出 → 无限压缩 → agent 永不回复且不报错。
+// 两段夹取保证至少 minPromptBudget 给 prompt。
+
+const DEFAULT_RESERVE_TOKENS = 4000; // 给模型回复预留（max_tokens 提到 2000 后 4000 够）
+const MIN_PROMPT_BUDGET_TOKENS = 4000; // 绝对下限
+const MIN_PROMPT_BUDGET_RATIO = 0.5; // 相对下限：窗口的一半
+
+/**
+ * 解析实际 reserveTokens（夹取后）。保证 prompt 至少拿到 min(4000, window/2)。
+ */
+function resolveReserveTokens(contextWindow) {
+  const minPromptBudget = Math.min(
+    MIN_PROMPT_BUDGET_TOKENS,
+    Math.max(1, Math.floor(contextWindow * MIN_PROMPT_BUDGET_RATIO)),
+  );
+  const maxReserve = Math.max(0, contextWindow - minPromptBudget);
+  return Math.min(DEFAULT_RESERVE_TOKENS, maxReserve);
+}
+
+/**
+ * 是否该触发压缩：contextTokens > contextWindow - reserveTokens
+ * @param {number} contextTokens 当前上下文 token 估算
+ * @param {number} contextWindow 模型上下文窗口
+ */
+function shouldCompact(contextTokens, contextWindow) {
+  if (!contextWindow || contextWindow <= 0) return false;
+  return contextTokens > contextWindow - resolveReserveTokens(contextWindow);
+}
+
+module.exports = {
+  estimateText,
+  estimateMessage,
+  estimateContextTokens,
+  shouldCompact,
+  resolveReserveTokens,
+};
