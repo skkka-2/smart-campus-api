@@ -11,6 +11,7 @@ const { getClient } = require('./llmClient');
 const { buildIntentMessages, extractIntent } = require('./intentExtractor');
 const { validateToolArguments } = require('./toolValidator');
 const { estimateContextTokens } = require('./tokenBudget');
+const { truncateOldToolResults } = require('./contextManager');
 
 const MAX_STEPS = 6;
 const FORCE_MOCK = String(process.env.AGENT_MOCK || '').toLowerCase() === 'true';
@@ -325,6 +326,11 @@ async function runAgentWithSession({
   for (let step = 0; step < MAX_STEPS; step += 1) {
     // ① 每轮开头检查中断（学自 pi agent-loop.ts 的 signal 检查点）
     if (signal?.aborted) break;
+
+    // P2-2a：截断旧 tool result。最近 2 轮保留全文，更旧的替换成提示性摘要。
+    // 学自 openclaw 四态路由的"先截断后摘要"：免费、近乎无损（旧岗位列表本来就没用了）。
+    // 短对话无影响（没有超过 2 轮的旧 tool result）。
+    truncateOldToolResults(messages, { keepRounds: 2 });
 
     onEvent(trace.createThinkingEvent({ step }));
     agentTracer.addEvent(runSpan, 'agent.thinking', { step });
