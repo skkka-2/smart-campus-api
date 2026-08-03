@@ -15,6 +15,12 @@ async function bootstrap() {
   await observability.start();
   await verifyConnection();
 
+  // 启动时校验：所有注册工具都必须在 safetyPolicy.TOOL_RISK 里登记风险等级，
+  // 漏登记（新写工具忘了配确认）直接启动失败。fail fast at startup。
+  const toolRegistry = require('./agent/toolRegistry');
+  const { assertAllToolsClassified } = require('./agent/safetyPolicy');
+  assertAllToolsClassified(toolRegistry.TOOLS.map((t) => t.name));
+
   const app = new Koa();
 
   app.use(errorMiddleware);            // 必须最外层,兜住所有 throw

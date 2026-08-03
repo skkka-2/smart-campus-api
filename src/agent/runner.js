@@ -3,6 +3,7 @@ const { BizError } = require('../utils/response');
 const { SYSTEM_PROMPT } = require('./prompt');
 const memoryService = require('./memoryService');
 const toolRegistry = require('./toolRegistry');
+const safetyPolicy = require('./safetyPolicy');
 const trace = require('./traceService');
 const agentTracer = require('../observability/agentTracer');
 const { runMockAgent } = require('../services/mockAgent');
@@ -268,6 +269,59 @@ async function runAgentWithSession({
     });
   }
 
+  // 执行单个已校验的非 confirm 工具，返回 { result, errorStr }。
+  // 内部捕获所有异常转成 errorStr，不往外抛（保证 Promise.all 不被一个工具打挂）。
+  // 学自 pi 的 finalizeExecutedToolCall 捕获所有异常。
+  async function executeOneTool(tool, args, call, userId, sessionId) {
+    try {
+      const result = await agentTracer.withSpan(`agent.tool.${tool.name}`, {
+        'agent.session_id': sessionId,
+        'agent.tool.name': tool.name,
+        'agent.tool.args': agentTracer.summarizeToolArgs(args),
+      }, async (span) => {
+        const toolResult = await tool.handler(args, { userId });
+        span.setAttributes({
+          'agent.tool.ok': toolResult?.ok !== false,
+          'agent.tool.summary': toolResult?.display?.summary || '',
+        });
+        return toolResult;
+      });
+      return { result, errorStr: null };
+    } catch (err) {
+      return { result: null, errorStr: err.message || String(err) };
+    }
+  }
+
+  // 工具执行后的统一收尾：push tool_result message + executedCalls + 事件（保证顺序）。
+  function finalizeToolResult(call, name, args, result, errorStr) {
+    messages.push({
+      role: 'tool',
+      tool_call_id: call.id,
+      content: errorStr
+        ? JSON.stringify({ error: errorStr })
+        : JSON.stringify(toolRegistry.unwrapToolData(result)),
+    });
+    executedCalls.push({
+      name,
+      args,
+      result: errorStr ? null : result,
+      error: errorStr,
+      summary: result?.display?.summary || errorStr || null,
+    });
+    onEvent(trace.createToolResultEvent({
+      id: call.id,
+      name,
+      result,
+      error: errorStr,
+      summary: result?.display?.summary,
+    }));
+    agentTracer.addEvent(runSpan, 'agent.tool_result', {
+      tool: name,
+      ok: !errorStr,
+      summary: result?.display?.summary || errorStr || '',
+    });
+  }
+
   for (let step = 0; step < MAX_STEPS; step += 1) {
     // ① 每轮开头检查中断（学自 pi agent-loop.ts 的 signal 检查点）
     if (signal?.aborted) break;
@@ -350,22 +404,23 @@ async function runAgentWithSession({
       continue;
     }
 
-    for (const call of assistantMsg.tool_calls) {
-      // ③ 每个工具执行前检查中断
-      if (signal?.aborted) break;
+    // ===== 工具执行：三阶段（学自 pi agent-loop.ts:489）=====
+    // 阶段1 串行准备（校验+确认门控）→ 阶段2 决定模式 → 阶段3 执行+串行收尾
+    const toolCalls = assistantMsg.tool_calls;
 
+    // 阶段1：串行准备。immediate 的（错误/confirm）当场处理；execute 的收集起来。
+    const toExecute = []; // { call, tool, args }
+    for (const call of toolCalls) {
+      if (signal?.aborted) break;
       const id = call.id;
       const name = call.function.name;
       const tool = toolRegistry.getToolDefinition(name);
 
-      // ① 工具不存在：直接回错，不执行 handler
       if (!tool) {
         emitToolError(call, `未知工具 ${name}`);
         continue;
       }
 
-      // ② 参数校验：失败把带字段路径的错误回给模型，让它重发
-      //    （学自 pi 的 validateToolArguments，旧的 catch { args = {} } 在此废弃）
       let args;
       try {
         args = validateToolArguments(tool, call.function.arguments);
@@ -380,9 +435,8 @@ async function runAgentWithSession({
         args: agentTracer.summarizeToolArgs(args),
       });
 
-      let result;
-      let errorStr;
       if (toolRegistry.requiresConfirmation(name, args)) {
+        // confirm 工具：不执行，发 action_required，当场收尾
         const actionPayload = { action: name, payload: args };
         messages.push({
           role: 'tool',
@@ -393,71 +447,50 @@ async function runAgentWithSession({
           }),
         });
         executedCalls.push({
-          name,
-          args,
-          result: null,
-          error: null,
-          actionRequired: true,
-          summary: '需要用户确认',
+          name, args, result: null, error: null,
+          actionRequired: true, summary: '需要用户确认',
         });
         onEvent(trace.createActionRequiredEvent({
-          action: name,
-          payload: args,
-          confirmText: buildConfirmText(name, args),
+          action: name, payload: args, confirmText: buildConfirmText(name, args),
         }));
         onEvent(trace.createToolResultEvent({
-          id: call.id,
-          name,
-          result: actionPayload,
-          summary: '需要用户确认',
+          id: call.id, name, result: actionPayload, summary: '需要用户确认',
         }));
         continue;
-      } else {
-        try {
-          result = await agentTracer.withSpan(`agent.tool.${name}`, {
-            'agent.session_id': sessionId,
-            'agent.tool.name': name,
-            'agent.tool.args': agentTracer.summarizeToolArgs(args),
-          }, async (span) => {
-            const toolResult = await tool.handler(args, { userId });
-            span.setAttributes({
-              'agent.tool.ok': toolResult?.ok !== false,
-              'agent.tool.summary': toolResult?.display?.summary || '',
-            });
-            return toolResult;
-          });
-        } catch (err) {
-          errorStr = err.message || String(err);
-        }
       }
 
-      messages.push({
-        role: 'tool',
-        tool_call_id: call.id,
-        content: errorStr
-          ? JSON.stringify({ error: errorStr })
-          : JSON.stringify(toolRegistry.unwrapToolData(result)),
-      });
+      toExecute.push({ call, tool, args });
+    }
 
-      executedCalls.push({
-        name,
-        args,
-        result: errorStr ? null : result,
-        error: errorStr,
-        summary: result?.display?.summary || errorStr || null,
-      });
-      onEvent(trace.createToolResultEvent({
-        id: call.id,
-        name,
-        result,
-        error: errorStr,
-        summary: result?.display?.summary,
-      }));
-      agentTracer.addEvent(runSpan, 'agent.tool_result', {
-        tool: name,
-        ok: !errorStr,
-        summary: result?.display?.summary || errorStr || '',
-      });
+    // 阶段2：决定执行模式。任一工具 sequential → 整批串行（学自 pi agent-loop.ts:419）。
+    const hasSequential = toExecute.some(
+      ({ tool }) => safetyPolicy.getExecutionMode(tool.name) === 'sequential',
+    );
+
+    // 阶段3：执行 + 串行收尾。
+    // 串行：逐个 await；并行：Promise.all（executeOneTool 内部已捕获异常，不会 reject）。
+    const results = hasSequential
+      ? await runSequential(toExecute)
+      : await Promise.all(toExecute.map((item) => runOne(item)));
+
+    async function runOne({ call, tool, args }) {
+      if (signal?.aborted) return { call, name: tool.name, args, result: null, errorStr: 'aborted' };
+      const { result, errorStr } = await executeOneTool(tool, args, call, userId, sessionId);
+      return { call, name: tool.name, args, result, errorStr };
+    }
+    async function runSequential(items) {
+      const out = [];
+      for (const item of items) {
+        if (signal?.aborted) break;
+        out.push(await runOne(item));
+      }
+      return out;
+    }
+
+    // 串行收尾：按原顺序 push messages + executedCalls + 事件（顺序稳定，保 prompt cache）
+    for (const r of results) {
+      if (!r) continue;
+      finalizeToolResult(r.call, r.name, r.args, r.result, r.errorStr);
     }
   }
 
