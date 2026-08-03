@@ -172,13 +172,12 @@ async function favoriteJob({ id }, { userId }) {
 }
 
 async function applyJob({ id, message }, { userId }) {
-  if (!message || String(message).length < 10) {
-    throw new Error('申请留言至少 10 字,以便 HR 了解你');
-  }
+  // message 的长度约束已收敛到 schema（minLength:10 / maxLength:500），
+  // 这里不再手写检查。id 已由 schema 保证是 integer。
   const result = await jobService.applyJob({
     jobId: Number(id),
     userId,
-    message: String(message).slice(0, 500),
+    message,
   });
   const data = { jobId: Number(id), status: result.status };
   return toolOk(data, {
@@ -284,9 +283,10 @@ const TOOLS = [
       type: 'object',
       properties: {
         id: { type: 'integer' },
-        message: { type: 'string', description: '申请留言,至少 10 字' },
+        message: { type: 'string', description: '申请留言,至少 10 字', minLength: 10, maxLength: 500 },
       },
       required: ['id', 'message'],
+      additionalProperties: false,
     },
     handler: applyJob,
     safe: false,

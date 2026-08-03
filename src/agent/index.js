@@ -1,6 +1,7 @@
 const runner = require('./runner');
 const memoryService = require('./memoryService');
 const toolRegistry = require('./toolRegistry');
+const { validateToolArgsObject } = require('./toolValidator');
 const { BizError } = require('../utils/response');
 
 async function runAgent({
@@ -29,7 +30,11 @@ async function confirmAction({ userId, action, payload }) {
     throw BizError.badRequest(`${action} 不需要确认流程`);
   }
 
-  const result = await tool.handler(payload || {}, { userId });
+  // 参数校验：和 runner 走同一套 schema。
+  // 之前 confirmAction 直接把前端 payload 塞进 handler，绕过了 runner 的校验——
+  // 而这条路走的恰好是唯一的高危工具 apply_job。
+  const args = validateToolArgsObject(tool, payload);
+  const result = await tool.handler(args, { userId });
   return {
     action,
     status: 'done',

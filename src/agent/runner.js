@@ -8,6 +8,7 @@ const agentTracer = require('../observability/agentTracer');
 const { runMockAgent } = require('../services/mockAgent');
 const { getClient } = require('./llmClient');
 const { buildIntentMessages, extractIntent } = require('./intentExtractor');
+const { validateToolArguments } = require('./toolValidator');
 
 const MAX_STEPS = 6;
 const FORCE_MOCK = String(process.env.AGENT_MOCK || '').toLowerCase() === 'true';
@@ -214,6 +215,36 @@ async function runAgentWithSession({
   const executedCalls = [];
   let finalText = '';
 
+  // 工具未找到 / 参数校验失败时统一回错给模型。
+  // 闭包捕获 messages / executedCalls / onEvent / runSpan，避免参数列表过长。
+  function emitToolError(call, errorMessage) {
+    const name = call.function.name;
+    messages.push({
+      role: 'tool',
+      tool_call_id: call.id,
+      content: JSON.stringify({ error: errorMessage }),
+    });
+    executedCalls.push({
+      name,
+      args: null,
+      result: null,
+      error: errorMessage,
+      summary: errorMessage,
+    });
+    onEvent(trace.createToolResultEvent({
+      id: call.id,
+      name,
+      result: null,
+      error: errorMessage,
+      summary: errorMessage,
+    }));
+    agentTracer.addEvent(runSpan, 'agent.tool_result', {
+      tool: name,
+      ok: false,
+      summary: errorMessage,
+    });
+  }
+
   for (let step = 0; step < MAX_STEPS; step += 1) {
     onEvent(trace.createThinkingEvent({ step }));
     agentTracer.addEvent(runSpan, 'agent.thinking', { step });
@@ -259,26 +290,35 @@ async function runAgentWithSession({
     }
 
     for (const call of assistantMsg.tool_calls) {
+      const id = call.id;
       const name = call.function.name;
-      let args;
-      try {
-        args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
-      } catch {
-        args = {};
+      const tool = toolRegistry.getToolDefinition(name);
+
+      // ① 工具不存在：直接回错，不执行 handler
+      if (!tool) {
+        emitToolError(call, `未知工具 ${name}`);
+        continue;
       }
 
-      onEvent(trace.createToolCallEvent({ id: call.id, name, args }));
+      // ② 参数校验：失败把带字段路径的错误回给模型，让它重发
+      //    （学自 pi 的 validateToolArguments，旧的 catch { args = {} } 在此废弃）
+      let args;
+      try {
+        args = validateToolArguments(tool, call.function.arguments);
+      } catch (err) {
+        emitToolError(call, err.message);
+        continue;
+      }
+
+      onEvent(trace.createToolCallEvent({ id, name, args }));
       agentTracer.addEvent(runSpan, 'agent.tool_call', {
         tool: name,
         args: agentTracer.summarizeToolArgs(args),
       });
 
-      const tool = toolRegistry.getToolDefinition(name);
       let result;
       let errorStr;
-      if (!tool) {
-        errorStr = `未知工具 ${name}`;
-      } else if (toolRegistry.requiresConfirmation(name, args)) {
+      if (toolRegistry.requiresConfirmation(name, args)) {
         const actionPayload = { action: name, payload: args };
         messages.push({
           role: 'tool',
