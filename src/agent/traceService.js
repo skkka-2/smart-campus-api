@@ -36,6 +36,13 @@ function createFinalEvent({ content, toolCalls = 0, traceContext = null }) {
   };
 }
 
+// turn 层事件（学自 pi 的四层 agent/turn/message/tool）。
+// thinking 事件相当于 turn_start，这里补 turn_end：一轮 assistant + 工具执行完时发，
+// 让前端能按轮折叠展示（"第1轮：调了2个工具 → 第2轮：生成回答"）。
+function createTurnEndEvent({ step, toolCount = 0 }) {
+  return { type: 'turn_end', step, toolCount };
+}
+
 function createDeltaEvent({ content }) {
   return { type: 'delta', content };
 }
@@ -66,6 +73,7 @@ module.exports = {
   createToolResultEvent,
   createActionRequiredEvent,
   createFinalEvent,
+  createTurnEndEvent,
   createDeltaEvent,
   createErrorEvent,
   createMockFallbackEvent,

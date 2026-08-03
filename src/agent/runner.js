@@ -571,6 +571,9 @@ async function runAgentWithSession({
       if (!r) continue;
       finalizeToolResult(r.call, r.name, r.args, r.result, r.errorStr);
     }
+
+    // P3-1：一轮工具执行完，发 turn_end（前端可按轮折叠展示）
+    onEvent(trace.createTurnEndEvent({ step, toolCount: executedCalls.length }));
   }
 
   // 中断分支：客户端已断开，不发 final 事件（收不到），但保存一条 aborted 消息。
