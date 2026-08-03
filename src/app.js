@@ -21,6 +21,11 @@ async function bootstrap() {
   const { assertAllToolsClassified } = require('./agent/safetyPolicy');
   assertAllToolsClassified(toolRegistry.TOOLS.map((t) => t.name));
 
+  // 登记密钥用于日志脱敏（学 openclaw secret-redaction-registry）。
+  // 之后所有错误出口过 redactSecrets，防止 SDK error message 带 api_key 泄漏到日志/前端。
+  const { registerSecret } = require('./observability/secretRedaction');
+  if (config.openai.apiKey) registerSecret(config.openai.apiKey);
+
   const app = new Koa();
 
   app.use(errorMiddleware);            // 必须最外层,兜住所有 throw

@@ -17,6 +17,10 @@ const {
   buildSummaryPrompt,
   assembleCompactedHistory,
 } = require('./contextManager');
+const { redactSecrets } = require('../observability/secretRedaction');
+
+// 脱敏错误信息：防止 SDK error message 里的 api_key 泄漏到日志/前端/模型。
+const safeErr = (err) => redactSecrets(err?.message || String(err));
 
 const MAX_STEPS = 6;
 const FORCE_MOCK = String(process.env.AGENT_MOCK || '').toLowerCase() === 'true';
@@ -119,8 +123,8 @@ async function compactHistory({ client, messages, signal, runSpan }) {
   } catch (err) {
     // 压缩失败不致命：原 messages 不变，继续跑（学自 pi 的"宁可慢也不要崩"）
     if (err.name === 'AbortError' || signal?.aborted) throw err;
-    agentTracer.addEvent(runSpan, 'agent.compaction_failed', { message: err.message });
-    console.warn('[agent] compaction failed, keep original messages:', err.message);
+    agentTracer.addEvent(runSpan, 'agent.compaction_failed', { message: safeErr(err) });
+    console.warn('[agent] compaction failed, keep original messages:', safeErr(err));
     return false;
   }
 }
@@ -265,8 +269,8 @@ async function runAgentWithSession({
     sessionId,
     runSpan,
   }).catch((err) => {
-    console.warn('[agent] intent extraction skipped:', err.message);
-    agentTracer.addEvent(runSpan, 'agent.intent.error', { message: err.message });
+    console.warn('[agent] intent extraction skipped:', safeErr(err));
+    agentTracer.addEvent(runSpan, 'agent.intent.error', { message: safeErr(err) });
     return null;
   });
   if (intent) {
@@ -346,7 +350,7 @@ async function runAgentWithSession({
       });
       return { result, errorStr: null };
     } catch (err) {
-      return { result: null, errorStr: err.message || String(err) };
+      return { result: null, errorStr: safeErr(err) };
     }
   }
 
@@ -426,8 +430,8 @@ async function runAgentWithSession({
         break;
       }
       if (step === 0) {
-        console.warn('[agent] OpenAI 首步失败,切到 mock 兜底:', err.message);
-        onEvent(trace.createMockFallbackEvent({ reason: err.message }));
+        console.warn('[agent] OpenAI 首步失败,切到 mock 兜底:', safeErr(err));
+        onEvent(trace.createMockFallbackEvent({ reason: safeErr(err) }));
         const { finalText: mockFinal, toolCalls: mockCalls } = await runMockAgent(userId, message, onEvent, context);
         await memoryService.saveMessage({
           userId,
@@ -438,8 +442,8 @@ async function runAgentWithSession({
         });
         return { finalText: mockFinal, toolCalls: mockCalls };
       }
-      onEvent(trace.createErrorEvent({ message: `AI 调用失败:${err.message}` }));
-      agentTracer.addEvent(runSpan, 'agent.error', { message: err.message });
+      onEvent(trace.createErrorEvent({ message: `AI 调用失败:${safeErr(err)}` }));
+      agentTracer.addEvent(runSpan, 'agent.error', { message: safeErr(err) });
       throw err;
     }
 
@@ -500,7 +504,7 @@ async function runAgentWithSession({
       try {
         args = validateToolArguments(tool, call.function.arguments);
       } catch (err) {
-        emitToolError(call, err.message);
+        emitToolError(call, safeErr(err));
         continue;
       }
 

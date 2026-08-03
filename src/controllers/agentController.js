@@ -50,8 +50,10 @@ const agentController = {
       if (err.name === 'AbortError' || abortController.signal.aborted) {
         console.warn('[agent] stream aborted by client');
       } else {
-        console.error('[agent] runAgent error:', err);
-        send({ type: 'error', message: err.message || 'agent 内部错误' });
+        // err 可能含 api_key（SDK error message），console 整个对象会打印，message 也会发前端
+        const { redactSecrets } = require('../observability/secretRedaction');
+        console.error('[agent] runAgent error:', redactSecrets(err?.message || String(err)));
+        send({ type: 'error', message: redactSecrets(err?.message || 'agent 内部错误') });
       }
     } finally {
       try { res.end(); } catch { /* noop */ }
