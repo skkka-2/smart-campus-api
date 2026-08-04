@@ -124,6 +124,29 @@ const userService = {
   async updateProfile(userId, patch = {}) {
     const GRADES = ['大一', '大二', '大三', '大四', '研一', '研二', '研三', '其他'];
     const DIRECTIONS = ['前端', '后端', '算法', '产品', '设计', '运营', '数据', '测试', '其他'];
+
+    // 账号信息：用户名/手机/邮箱 格式 + 唯一性
+    if (Object.prototype.hasOwnProperty.call(patch, 'username')) {
+      const u = patch.username;
+      if (!u || u.length < 3 || u.length > 32) throw BizError.badRequest('用户名长度需 3-32 字符');
+      if (await userRepository.isFieldTaken('username', u, userId)) throw BizError.conflict('用户名已被占用');
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'phone')) {
+      const p = patch.phone;
+      if (!p || !/^1\d{10}$/.test(p)) throw BizError.badRequest('手机号格式不合法');
+      if (await userRepository.isFieldTaken('phone', p, userId)) throw BizError.conflict('该手机号已注册');
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'email')) {
+      const e = patch.email;
+      // 允许清空（设 null）
+      if (e !== null && e !== '') {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw BizError.badRequest('邮箱格式不合法');
+        if (await userRepository.isFieldTaken('email', e, userId)) throw BizError.conflict('该邮箱已被占用');
+      } else {
+        patch.email = null;
+      }
+    }
+
     if (patch.grade && !GRADES.includes(patch.grade)) {
       throw BizError.badRequest('年级不合法');
     }

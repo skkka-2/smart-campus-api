@@ -27,8 +27,8 @@ CREATE TABLE IF NOT EXISTS `userlist` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `username` VARCHAR(64) NOT NULL,
   `password` VARCHAR(255) NOT NULL COMMENT 'bcrypt hash',
-  `confirmpassword` VARCHAR(255) DEFAULT NULL,
   `phone` VARCHAR(20) NOT NULL,
+  `email` VARCHAR(128) DEFAULT NULL COMMENT '邮箱',
   -- Phase 5:画像字段
   `avatar_url` VARCHAR(500) DEFAULT NULL,
   `bio` VARCHAR(200) DEFAULT NULL,
@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS `userlist` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_username` (`username`),
-  UNIQUE KEY `uk_phone` (`phone`)
+  UNIQUE KEY `uk_phone` (`phone`),
+  UNIQUE KEY `uk_email` (`email`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 
 -- ============================================================

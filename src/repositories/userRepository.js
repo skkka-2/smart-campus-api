@@ -1,7 +1,7 @@
 const { db } = require('../db');
 
 const PROFILE_FIELDS = [
-  'id', 'username', 'phone', 'avatar_url', 'bio',
+  'id', 'username', 'phone', 'email', 'avatar_url', 'bio',
   'major', 'college', 'grade', 'interests',
   'career_direction', 'preferred_city', 'created_at',
 ];
@@ -21,6 +21,17 @@ const userRepository = {
       [phone],
     );
     return rows[0] || null;
+  },
+
+  /** 检查某个值（username/phone/email）是否已被【别人】占用，用于改资料时唯一性校验 */
+  async isFieldTaken(field, value, excludeUserId) {
+    const allowed = ['username', 'phone', 'email'];
+    if (!allowed.includes(field)) throw new Error(`invalid field: ${field}`);
+    const [rows] = await db.query(
+      `SELECT id FROM userlist WHERE \`${field}\` = ? AND id <> ? LIMIT 1`,
+      [value, excludeUserId],
+    );
+    return rows.length > 0;
   },
 
   async findById(id) {
@@ -71,7 +82,7 @@ const userRepository = {
    * @param {object} patch
    */
   async updateProfile(id, patch) {
-    const allow = ['avatar_url', 'bio', 'major', 'college', 'grade', 'career_direction', 'preferred_city'];
+    const allow = ['username', 'phone', 'email', 'avatar_url', 'bio', 'major', 'college', 'grade', 'career_direction', 'preferred_city'];
     const sets = [];
     const params = [];
     for (const key of allow) {
