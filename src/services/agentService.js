@@ -23,9 +23,20 @@ async function confirmAction(userId, { action, payload } = {}) {
   return agent.confirmAction({ userId, action, payload });
 }
 
+// P3-2 会话回放
+async function listSessions(userId) {
+  return agent.listSessions({ userId });
+}
+
+async function listSessionEvents(userId, sessionId) {
+  return agent.listSessionEvents({ userId, sessionId });
+}
+
 module.exports = {
   runAgent,
   history,
   clearHistory,
   confirmAction,
+  listSessions,
+  listSessionEvents,
 };

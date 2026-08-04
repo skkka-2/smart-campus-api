@@ -86,6 +86,19 @@ const agentController = {
     const data = await agentService.confirmAction(ctx.state.user.id, { action, payload });
     ctx.success(data);
   },
+
+  /** GET /api/agent/sessions —— 会话列表（回放入口） */
+  async getSessions(ctx) {
+    const sessions = await agentService.listSessions(ctx.state.user.id);
+    ctx.success({ items: sessions });
+  },
+
+  /** GET /api/agent/sessions/:sessionId/events —— 某会话的完整事件轨迹 */
+  async getSessionEvents(ctx) {
+    const { sessionId } = ctx.params;
+    const events = await agentService.listSessionEvents(ctx.state.user.id, sessionId);
+    ctx.success({ items: events });
+  },
 };
 
 module.exports = agentController;

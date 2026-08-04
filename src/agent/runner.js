@@ -18,6 +18,7 @@ const {
   assembleCompactedHistory,
 } = require('./contextManager');
 const { redactSecrets } = require('../observability/secretRedaction');
+const agentEventRepository = require('../repositories/agentEventRepository');
 
 // 脱敏错误信息：防止 SDK error message 里的 api_key 泄漏到日志/前端/模型。
 const safeErr = (err) => redactSecrets(err?.message || String(err));
@@ -243,11 +244,33 @@ async function runAgent({
 async function runAgentWithSession({
   userId, message, context, onEvent, sessionId, runSpan, signal,
 }) {
+  // P3-2b：事件双写。包一层 onEvent，发 SSE 事件的同时写 agent_events（异步，不阻塞主循环）。
+  // 只录关键事件（不录 delta——每个 token 一个，写 DB 会爆，且回放时用 final 文本即可）。
+  // 学自 pi 的 SessionEntry：事件是 agent 状态变更的完整轨迹，可回放。
+  let eventSeq = 0;
+  const RECORDED_TYPES = new Set([
+    'thinking', 'tool_call', 'tool_result', 'action_required',
+    'intent', 'turn_end', 'final', 'error', 'mock_fallback', 'compaction',
+  ]);
+  const emit = (event) => {
+    onEvent(event);
+    if (RECORDED_TYPES.has(event.type)) {
+      eventSeq += 1;
+      const seq = eventSeq;
+      // 异步写，失败不致命（回放缺一两条不影响主流程，日志记录即可）
+      agentEventRepository.append({
+        sessionId, userId, seq, type: event.type, payload: event,
+      }).catch((err) => {
+        console.warn('[agent] event append failed:', safeErr(err));
+      });
+    }
+  };
+
   await memoryService.saveMessage({ userId, sessionId, role: 'user', text: message });
 
   if (FORCE_MOCK || !config.openai.apiKey) {
     agentTracer.addEvent(runSpan, 'agent.mock_start');
-    const { finalText, toolCalls } = await runMockAgent(userId, message, onEvent, context);
+    const { finalText, toolCalls } = await runMockAgent(userId, message, emit, context);
     await memoryService.saveMessage({
       userId,
       sessionId,
@@ -274,7 +297,7 @@ async function runAgentWithSession({
     return null;
   });
   if (intent) {
-    onEvent(trace.createIntentEvent({
+    emit(trace.createIntentEvent({
       intent: intent.intent,
       confidence: intent.confidence,
       slots: intent.slots,
@@ -317,7 +340,7 @@ async function runAgentWithSession({
       error: errorMessage,
       summary: errorMessage,
     });
-    onEvent(trace.createToolResultEvent({
+    emit(trace.createToolResultEvent({
       id: call.id,
       name,
       result: null,
@@ -370,7 +393,7 @@ async function runAgentWithSession({
       error: errorStr,
       summary: result?.display?.summary || errorStr || null,
     });
-    onEvent(trace.createToolResultEvent({
+    emit(trace.createToolResultEvent({
       id: call.id,
       name,
       result,
@@ -405,7 +428,7 @@ async function runAgentWithSession({
       }
     }
 
-    onEvent(trace.createThinkingEvent({ step }));
+    emit(trace.createThinkingEvent({ step }));
     agentTracer.addEvent(runSpan, 'agent.thinking', { step });
 
     let completion;
@@ -419,7 +442,7 @@ async function runAgentWithSession({
         signal,
         onDelta(delta) {
           finalText += delta;
-          onEvent(trace.createDeltaEvent({ content: delta }));
+          emit(trace.createDeltaEvent({ content: delta }));
         },
       });
     } catch (err) {
@@ -431,8 +454,8 @@ async function runAgentWithSession({
       }
       if (step === 0) {
         console.warn('[agent] OpenAI 首步失败,切到 mock 兜底:', safeErr(err));
-        onEvent(trace.createMockFallbackEvent({ reason: safeErr(err) }));
-        const { finalText: mockFinal, toolCalls: mockCalls } = await runMockAgent(userId, message, onEvent, context);
+        emit(trace.createMockFallbackEvent({ reason: safeErr(err) }));
+        const { finalText: mockFinal, toolCalls: mockCalls } = await runMockAgent(userId, message, emit, context);
         await memoryService.saveMessage({
           userId,
           sessionId,
@@ -442,7 +465,7 @@ async function runAgentWithSession({
         });
         return { finalText: mockFinal, toolCalls: mockCalls };
       }
-      onEvent(trace.createErrorEvent({ message: `AI 调用失败:${safeErr(err)}` }));
+      emit(trace.createErrorEvent({ message: `AI 调用失败:${safeErr(err)}` }));
       agentTracer.addEvent(runSpan, 'agent.error', { message: safeErr(err) });
       throw err;
     }
@@ -508,7 +531,7 @@ async function runAgentWithSession({
         continue;
       }
 
-      onEvent(trace.createToolCallEvent({ id, name, args }));
+      emit(trace.createToolCallEvent({ id, name, args }));
       agentTracer.addEvent(runSpan, 'agent.tool_call', {
         tool: name,
         args: agentTracer.summarizeToolArgs(args),
@@ -529,10 +552,10 @@ async function runAgentWithSession({
           name, args, result: null, error: null,
           actionRequired: true, summary: '需要用户确认',
         });
-        onEvent(trace.createActionRequiredEvent({
+        emit(trace.createActionRequiredEvent({
           action: name, payload: args, confirmText: buildConfirmText(name, args),
         }));
-        onEvent(trace.createToolResultEvent({
+        emit(trace.createToolResultEvent({
           id: call.id, name, result: actionPayload, summary: '需要用户确认',
         }));
         continue;
@@ -573,7 +596,7 @@ async function runAgentWithSession({
     }
 
     // P3-1：一轮工具执行完，发 turn_end（前端可按轮折叠展示）
-    onEvent(trace.createTurnEndEvent({ step, toolCount: executedCalls.length }));
+    emit(trace.createTurnEndEvent({ step, toolCount: executedCalls.length }));
   }
 
   // 中断分支：客户端已断开，不发 final 事件（收不到），但保存一条 aborted 消息。
@@ -612,7 +635,7 @@ async function runAgentWithSession({
       outputLength: finalText.length,
     },
   }, 'agent');
-  onEvent(trace.createFinalEvent({
+  emit(trace.createFinalEvent({
     content: finalText,
     toolCalls: executedCalls.length,
     traceContext,

@@ -360,6 +360,26 @@ CREATE TABLE `job_application` (
   CONSTRAINT `fk_apply_user` FOREIGN KEY (`user_id`) REFERENCES `userlist` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+
+-- ============================================================
+-- agent_events：Agent 执行的完整事件轨迹（P3-2 会话可回放）
+-- 与 chatmessages 分离：chatmessages 只存对话文本（前端展示用），
+-- agent_events 存所有改变 agent 状态的事件（消息/工具调用/工具结果/压缩/确认），
+-- 用于回放和审计。学自 pi 的 SessionEntry 事件树（最小版：单线性 seq，不做 parentId 树）。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS `agent_events` (
+  `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `session_id` VARCHAR(64) NOT NULL,
+  `user_id`    VARCHAR(64) NOT NULL,
+  `seq`        INT UNSIGNED NOT NULL COMMENT 'session 内单调递增',
+  `type`       VARCHAR(32) NOT NULL COMMENT 'message|tool_call|tool_result|compaction|action_required|turn_end|...',
+  `payload`    JSON NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_session_seq` (`session_id`, `seq`),
+  KEY `idx_user_session` (`user_id`, `session_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf4mb4;
+
 SELECT 'schema v3 init done' AS status,
        (SELECT COUNT(*) FROM article)    AS articles,
        (SELECT COUNT(*) FROM category)   AS categories,
