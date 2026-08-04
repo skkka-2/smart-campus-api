@@ -71,14 +71,16 @@ function truncateOldToolResults(messages, { keepRounds = 2 } = {}) {
 function findCompactionCutPoint(messages, keepRecentTokens, estimateTextFn) {
   let accumulated = 0;
   let cutIndex = 0;
-  // 从后往前，累积到 keepRecentTokens 就找最近的合法切点
+  // 从后往前，累积到 keepRecentTokens 时，从该位置往前找最近的合法切点。
+  // 注意：若超阈值的位置是 tool_result，它属于前面的 tool_call，切点必须在它们之前——
+  // 往后找会落到 tool_result 之后（破坏配对）或找不到（tool_result 是末尾）。
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const m = messages[i];
     const tokens = estimateMsgTokens(m, estimateTextFn);
     accumulated += tokens;
     if (accumulated >= keepRecentTokens) {
-      // 从 i 往后找最近的合法切点（user 或 无 tool_calls 的 assistant）
-      for (let j = i; j < messages.length; j += 1) {
+      // 从 i 往前找最近的合法切点（user 或 无 tool_calls 的 assistant）
+      for (let j = i; j >= 0; j -= 1) {
         if (isValidCutPoint(messages[j])) {
           cutIndex = j;
           return { cutIndex };
