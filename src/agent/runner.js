@@ -249,7 +249,7 @@ async function runAgentWithSession({
   // 学自 pi 的 SessionEntry：事件是 agent 状态变更的完整轨迹，可回放。
   let eventSeq = 0;
   const RECORDED_TYPES = new Set([
-    'thinking', 'tool_call', 'tool_result', 'action_required',
+    'message', 'thinking', 'tool_call', 'tool_result', 'action_required',
     'intent', 'turn_end', 'final', 'error', 'mock_fallback', 'compaction',
   ]);
   const emit = (event) => {
@@ -267,6 +267,8 @@ async function runAgentWithSession({
   };
 
   await memoryService.saveMessage({ userId, sessionId, role: 'user', text: message });
+  // 录一条 user message 事件（回放时重建用户气泡用；实时流前端 onEvent 不处理 message 类型，会被忽略）
+  emit({ type: 'message', role: 'user', content: message });
 
   if (FORCE_MOCK || !config.openai.apiKey) {
     agentTracer.addEvent(runSpan, 'agent.mock_start');
