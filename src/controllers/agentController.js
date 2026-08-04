@@ -39,7 +39,15 @@ const agentController = {
     // 旧的 `aborted` 只挡住 send()，LLM 调用和工具继续跑、DB 继续写，
     // 最坏情况是用户关了页面但 apply_job 仍投递成功（不可见副作用）。
     const abortController = new AbortController();
-    ctx.req.on('close', () => { abortController.abort(); });
+    // Koa 手动 SSE（ctx.respond=false，自己 res.write）场景下 ctx.req.on('close') 不可靠。
+    // 实测：curl kill 后 req 的 close/aborted 事件不触发，导致 abortController.abort() 不执行，
+    // LLM 跑到底（26 秒）。改监听 res 的 close 事件——它由底层 socket 关闭触发，可靠。
+    res.on('close', () => {
+      if (!abortController.signal.aborted) {
+        console.log('[agent] client disconnected, aborting stream');
+        abortController.abort();
+      }
+    });
 
     try {
       await agentService.runAgent(ctx.state.user.id, message, (evt) => {
