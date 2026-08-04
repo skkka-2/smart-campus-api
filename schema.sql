@@ -42,7 +42,24 @@ CREATE TABLE IF NOT EXISTS `userlist` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_username` (`username`),
   UNIQUE KEY `uk_phone` (`phone`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+
+-- ============================================================
+-- refresh_token：refresh token 存储（JWT 双令牌）
+-- access token 短期不入库；refresh 入库，登出/改密 = 删行 = 失效
+-- ============================================================
+CREATE TABLE IF NOT EXISTS `refresh_token` (
+  `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `user_id`    INT UNSIGNED NOT NULL,
+  `token_hash` CHAR(64) NOT NULL COMMENT 'sha256(refresh token),不存明文',
+  `expires_at` DATETIME NOT NULL,
+  `revoked`    TINYINT(1) NOT NULL DEFAULT 0,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_token_hash` (`token_hash`),
+  KEY `idx_user` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+;
 
 -- 已存在的旧 userlist 补字段(幂等,MySQL 8/9 不支持 ADD COLUMN IF NOT EXISTS,用 information_schema 判断)
 DROP PROCEDURE IF EXISTS `add_user_profile_columns`;

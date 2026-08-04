@@ -6,6 +6,9 @@ const router = new Router();
 
 router.post('/register', userController.register);
 router.post('/login', userController.login);
+router.post('/refresh', userController.refresh);           // 换 access token
+router.post('/logout', userController.logout); // 撤销 refresh，不要求 access（可能已过期）
+router.post('/me/password', requireAuth, userController.changePassword); // 改密
 router.get('/me', requireAuth, userController.me);
 router.get('/me/profile', requireAuth, userController.getProfile);
 router.put('/me/profile', requireAuth, userController.updateProfile);

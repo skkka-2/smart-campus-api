@@ -37,7 +37,14 @@ const config = {
 
   jwt: {
     secret: process.env.JWT_SECRET || 'dev-only-do-not-use-in-prod',
-    expiresIn: process.env.JWT_EXPIRES_IN || '10h',
+    // 向后兼容旧字段名
+    expiresIn: process.env.JWT_EXPIRES_IN || '15m',
+    // 双令牌
+    accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '15m',
+    refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
+    refreshCookieName: process.env.JWT_REFRESH_COOKIE_NAME || 'rt',
+    cookieDomain: process.env.COOKIE_DOMAIN || '', // 留空表示同源
+    secureCookie: parseBool(process.env.COOKIE_SECURE, false), // 生产 HTTPS 才设 true
   },
 
   openai: {

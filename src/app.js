@@ -31,7 +31,7 @@ async function bootstrap() {
   app.use(errorMiddleware);            // 必须最外层,兜住所有 throw
   app.use(loggerMiddleware);
   app.use(corsMiddleware);
-  app.use(bodyParser());
+  app.use(bodyParser());               // Koa2 自带 ctx.cookies，refresh token 直接用它
   app.use(responseMiddleware);         // 挂 ctx.success / ctx.fail
   app.use(router.routes());
   app.use(router.allowedMethods());

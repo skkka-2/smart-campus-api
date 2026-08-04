@@ -31,6 +31,19 @@ const userRepository = {
     return rows[0] || null;
   },
 
+  /** 取 password hash（改密验证旧密码用，不对外暴露） */
+  async findPasswordById(id) {
+    const [rows] = await db.query(
+      'SELECT id, password FROM userlist WHERE id = ? LIMIT 1',
+      [id],
+    );
+    return rows[0] || null;
+  },
+
+  async updatePassword(id, hashedPassword) {
+    await db.query('UPDATE userlist SET password = ? WHERE id = ?', [hashedPassword, id]);
+  },
+
   /** 完整画像 */
   async findProfileById(id) {
     const [rows] = await db.query(
