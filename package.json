@@ -13,6 +13,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@koa/multer": "^4.0.0",
     "@langfuse/openai": "^5.9.1",
     "@langfuse/otel": "^5.9.1",
     "@langfuse/tracing": "^5.9.1",
@@ -27,8 +28,10 @@
     "jsonwebtoken": "^9.0.2",
     "koa-bodyparser": "^4.4.1",
     "koa-router": "^13.0.1",
+    "koa-static": "^5.0.0",
     "koa2": "^2.0.0-alpha.7",
     "koa2-cors": "^2.0.6",
+    "multer": "^2.2.0",
     "mysql2": "^3.11.3",
     "openai": "^4.72.0",
     "ws": "^8.18.0"

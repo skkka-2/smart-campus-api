@@ -33,6 +33,10 @@ async function bootstrap() {
   app.use(corsMiddleware);
   app.use(bodyParser());               // Koa2 自带 ctx.cookies，refresh token 直接用它
   app.use(responseMiddleware);         // 挂 ctx.success / ctx.fail
+  // 静态文件：头像通过 /uploads/avatars/xxx.png 访问
+  // root 设为 cwd，让 /uploads/... 直接映射到 <cwd>/uploads/...
+  const serve = require('koa-static');
+  app.use(serve(process.cwd(), { prefix: '/uploads' }));
   app.use(router.routes());
   app.use(router.allowedMethods());
 

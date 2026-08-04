@@ -1,5 +1,9 @@
 const userService = require('../services/userService');
 const config = require('../config');
+const multer = require('@koa/multer');
+
+// 头像上传：内存限制 5MB，存磁盘由 storage 处理
+const upload = multer({ dest: 'uploads/tmp', limits: { fileSize: 5 * 1024 * 1024 } });
 
 // 写 refresh token 到 httpOnly cookie
 function setRefreshCookie(ctx, refreshToken, options) {
@@ -69,6 +73,20 @@ const userController = {
     const profile = await userService.updateProfile(ctx.state.user.id, patch);
     ctx.success(profile, '已更新');
   },
+
+  /** POST /api/users/me/avatar —— multipart 上传头像 */
+  async uploadAvatar(ctx) {
+    const file = ctx.file;
+    const result = await userService.uploadAvatar(ctx.state.user.id, file);
+    // 清理临时文件
+    if (file?.path) {
+      const fs = require('fs');
+      fs.unlink(file.path, () => {});
+    }
+    ctx.success(result, '头像已更新');
+  },
 };
 
 module.exports = userController;
+// 导出 upload 中间件供路由用
+module.exports.avatarUpload = upload.single('avatar');

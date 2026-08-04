@@ -139,6 +139,26 @@ const userService = {
     await userRepository.updateProfile(userId, patch);
     return userRepository.findProfileById(userId);
   },
+
+  /** 上传头像：存文件 + 更新 avatar_url，返回新 URL */
+  async uploadAvatar(userId, file) {
+    if (!file) throw BizError.badRequest('缺少文件');
+    // 校验类型和大小
+    const ALLOWED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!ALLOWED.includes(file.mimetype)) {
+      throw BizError.badRequest('仅支持 jpg/png/webp/gif');
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      throw BizError.badRequest('图片不能超过 5MB');
+    }
+    const ext = (file.mimetype.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+    const fs = require('fs');
+    const buf = fs.readFileSync(file.path);
+    const storage = require('../utils/storage');
+    const { url } = await storage.saveAvatar(buf, ext);
+    await userRepository.updateProfile(userId, { avatar_url: url });
+    return { avatar_url: url };
+  },
 };
 
 module.exports = userService;
