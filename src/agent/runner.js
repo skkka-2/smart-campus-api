@@ -247,7 +247,7 @@ async function runAgentWithSession({
   // P3-2b：事件双写。包一层 onEvent，发 SSE 事件的同时写 agent_events（异步，不阻塞主循环）。
   // 只录关键事件（不录 delta——每个 token 一个，写 DB 会爆，且回放时用 final 文本即可）。
   // 学自 pi 的 SessionEntry：事件是 agent 状态变更的完整轨迹，可回放。
-  let eventSeq = 0;
+  // seq 由 repository 自己算（MAX+1），不在这里维护——之前每请求从 0 开始会导致同 session 第二轮撞唯一索引。
   const RECORDED_TYPES = new Set([
     'message', 'thinking', 'tool_call', 'tool_result', 'action_required',
     'intent', 'turn_end', 'final', 'error', 'mock_fallback', 'compaction',
@@ -255,16 +255,22 @@ async function runAgentWithSession({
   const emit = (event) => {
     onEvent(event);
     if (RECORDED_TYPES.has(event.type)) {
-      eventSeq += 1;
-      const seq = eventSeq;
       // 异步写，失败不致命（回放缺一两条不影响主流程，日志记录即可）
       agentEventRepository.append({
-        sessionId, userId, seq, type: event.type, payload: event,
+        sessionId, userId, type: event.type, payload: event,
       }).catch((err) => {
         console.warn('[agent] event append failed:', safeErr(err));
       });
     }
   };
+
+  // 先加载历史（不含当前消息），再存当前消息——避免当前 user message 重复进上下文。
+  // 之前 saveMessage 在 loadRecent 前，导致 loadRecent 读到刚存的当前消息，
+  // 而 messages 数组末尾又 append 一次 → 当前问题出现两遍。
+  const history = await agentTracer.withSpan('agent.memory.load', {
+    'agent.session_id': sessionId,
+    'agent.user_id_hash': require('../observability/redactor').hashUserId(userId),
+  }, () => memoryService.loadRecentMessages({ userId, sessionId }));
 
   await memoryService.saveMessage({ userId, sessionId, role: 'user', text: message });
   // 录一条 user message 事件（回放时重建用户气泡用；实时流前端 onEvent 不处理 message 类型，会被忽略）
@@ -283,10 +289,6 @@ async function runAgentWithSession({
     return { finalText, toolCalls };
   }
 
-  const history = await agentTracer.withSpan('agent.memory.load', {
-    'agent.session_id': sessionId,
-    'agent.user_id_hash': require('../observability/redactor').hashUserId(userId),
-  }, () => memoryService.loadRecentMessages({ userId, sessionId }));
   const intent = await extractIntent({
     userId,
     message,

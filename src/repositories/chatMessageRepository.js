@@ -19,15 +19,21 @@ const chatMessageRepository = {
 
   /**
    * 拉取某用户某会话的对话记录（按 session 隔离，防上下文交叉污染）。
-   * 走 idx_session 索引（schema.sql 已建）。时间正序，取最近 limit 条。
+   * 走 idx_session 索引。取【最近 limit 条】，按时间正序返回给模型。
+   * 之前 ASC + LIMIT 取的是最早的 limit 条，长会话永远拿不到最新上下文。
+   * 修法：子查询先 DESC 取最近 limit 条，外层再 ASC 正序。
    */
   async listBySession(userId, sessionId, limit = 50) {
     const [rows] = await db.query(
       `SELECT id, user_id, session_id, type, text, timestamp, metadata
-         FROM chatmessages
-        WHERE user_id = ? AND session_id = ?
-        ORDER BY timestamp ASC, id ASC
-        LIMIT ?`,
+         FROM (
+           SELECT id, user_id, session_id, type, text, timestamp, metadata
+             FROM chatmessages
+            WHERE user_id = ? AND session_id = ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+         ) AS recent
+         ORDER BY timestamp ASC, id ASC`,
       [userId, sessionId, limit],
     );
     return rows.map((r) => {

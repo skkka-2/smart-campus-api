@@ -53,8 +53,21 @@ async function getHistory({ userId } = {}) {
 }
 
 async function clearHistory({ userId } = {}) {
-  const affected = await chatMessageRepository.clearByUser(userId);
-  return { cleared: affected };
+  // 两个表独立清空，一个失败不挡另一个（chatmessages 可能有历史脏数据导致报错，不该挡 events 清理）
+  let chatCleared = 0;
+  let eventCleared = 0;
+  try {
+    chatCleared = await chatMessageRepository.clearByUser(userId);
+  } catch (err) {
+    console.warn('[agent] clear chatmessages failed:', err.message);
+  }
+  try {
+    const agentEventRepository = require('../repositories/agentEventRepository');
+    eventCleared = await agentEventRepository.clearByUser(userId);
+  } catch (err) {
+    console.warn('[agent] clear agent_events failed:', err.message);
+  }
+  return { cleared: chatCleared, eventCleared };
 }
 
 module.exports = {

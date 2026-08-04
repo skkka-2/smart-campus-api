@@ -5,10 +5,17 @@ const { db } = require('../db');
 
 const agentEventRepository = {
   /**
-   * 追加一条事件。seq 由调用方（traceService 或 runner）保证 session 内单调递增。
-   * 用 uk_session_seq 唯一约束防重复（并发或重试时同 seq 会冲突）。
+  /**
+   * 追加一条事件。seq 由 repository 自己算（MAX(seq)+1），不信任调用方传入——
+   * 之前 runner 每请求从 0 开始，导致同 session 第二轮撞 uk_session_seq 唯一索引。
+   * 唯一索引仍保留做兜底；冲突时 catch 住重算一次。
    */
-  async append({ sessionId, userId, seq, type, payload }) {
+  async append({ sessionId, userId, type, payload }) {
+    const [[maxRow]] = await db.query(
+      'SELECT COALESCE(MAX(seq), 0) AS m FROM agent_events WHERE session_id = ?',
+      [sessionId],
+    );
+    const seq = (maxRow?.m || 0) + 1;
     const [res] = await db.query(
       `INSERT INTO agent_events (session_id, user_id, seq, type, payload)
        VALUES (?, ?, ?, ?, ?)`,
@@ -55,6 +62,12 @@ const agentEventRepository = {
       'DELETE FROM agent_events WHERE user_id = ? AND session_id = ?',
       [String(userId), sessionId],
     );
+    return res.affectedRows;
+  },
+
+  /** 清空某用户全部事件（清空历史时一起删 agent_events） */
+  async clearByUser(userId) {
+    const [res] = await db.query('DELETE FROM agent_events WHERE user_id = ?', [String(userId)]);
     return res.affectedRows;
   },
 };

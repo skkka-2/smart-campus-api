@@ -396,7 +396,7 @@ CREATE TABLE IF NOT EXISTS `agent_events` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_session_seq` (`session_id`, `seq`),
   KEY `idx_user_session` (`user_id`, `session_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf4mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SELECT 'schema v3 init done' AS status,
        (SELECT COUNT(*) FROM article)    AS articles,
