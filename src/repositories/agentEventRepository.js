@@ -1,27 +1,61 @@
 // agent_events 表的 repository。
 // P3-2 会话可回放：把 agent 执行的所有事件落库，前端可按 seq 重放。
 // 学自 pi 的 SessionEntry 事件树（最小版：单线性 seq，不做 parentId 树/fork）。
+const crypto = require('node:crypto');
 const { db } = require('../db');
+
+function eventLockName(sessionId) {
+  // MySQL named lock 名称最长 64 字节，hash 后固定为 64 个 ASCII 字符。
+  return crypto.createHash('sha256').update(String(sessionId)).digest('hex');
+}
 
 const agentEventRepository = {
   /**
-  /**
-   * 追加一条事件。seq 由 repository 自己算（MAX(seq)+1），不信任调用方传入——
-   * 之前 runner 每请求从 0 开始，导致同 session 第二轮撞 uk_session_seq 唯一索引。
-   * 唯一索引仍保留做兜底；冲突时 catch 住重算一次。
+   * 追加一条事件。通过 MySQL session lock 串行化同一 session 的 seq 分配，
+   * 避免并发 MAX(seq)+1 得到相同 seq。
    */
   async append({ sessionId, userId, type, payload }) {
-    const [[maxRow]] = await db.query(
-      'SELECT COALESCE(MAX(seq), 0) AS m FROM agent_events WHERE session_id = ?',
-      [sessionId],
-    );
-    const seq = (maxRow?.m || 0) + 1;
-    const [res] = await db.query(
-      `INSERT INTO agent_events (session_id, user_id, seq, type, payload)
-       VALUES (?, ?, ?, ?, ?)`,
-      [sessionId, String(userId), seq, type, JSON.stringify(payload)],
-    );
-    return res.insertId;
+    const connection = await db.getConnection();
+    const lockName = eventLockName(sessionId);
+    let lockAcquired = false;
+    let transactionStarted = false;
+
+    try {
+      const [[lockRow]] = await connection.query(
+        'SELECT GET_LOCK(?, 10) AS acquired',
+        [lockName],
+      );
+      if (Number(lockRow?.acquired) !== 1) {
+        throw new Error(`failed to acquire agent event lock for session ${sessionId}`);
+      }
+      lockAcquired = true;
+
+      await connection.beginTransaction();
+      transactionStarted = true;
+      const [[maxRow]] = await connection.query(
+        'SELECT COALESCE(MAX(seq), 0) AS m FROM agent_events WHERE session_id = ?',
+        [sessionId],
+      );
+      const seq = Number(maxRow?.m || 0) + 1;
+      const [res] = await connection.query(
+        `INSERT INTO agent_events (session_id, user_id, seq, type, payload)
+         VALUES (?, ?, ?, ?, ?)`,
+        [sessionId, String(userId), seq, type, JSON.stringify(payload)],
+      );
+      await connection.commit();
+      transactionStarted = false;
+      return res.insertId;
+    } catch (err) {
+      if (transactionStarted) {
+        await connection.rollback().catch(() => {});
+      }
+      throw err;
+    } finally {
+      if (lockAcquired) {
+        await connection.query('SELECT RELEASE_LOCK(?)', [lockName]).catch(() => {});
+      }
+      connection.release();
+    }
   },
 
   /** 按 seq 正序拉某会话的全部事件（回放用） */

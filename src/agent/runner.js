@@ -244,23 +244,32 @@ async function runAgent({
 async function runAgentWithSession({
   userId, message, context, onEvent, sessionId, runSpan, signal,
 }) {
-  // P3-2b：事件双写。包一层 onEvent，发 SSE 事件的同时写 agent_events（异步，不阻塞主循环）。
+  // P3-2b：事件双写。包一层 onEvent，发 SSE 事件的同时排队写 agent_events。
   // 只录关键事件（不录 delta——每个 token 一个，写 DB 会爆，且回放时用 final 文本即可）。
   // 学自 pi 的 SessionEntry：事件是 agent 状态变更的完整轨迹，可回放。
-  // seq 由 repository 自己算（MAX+1），不在这里维护——之前每请求从 0 开始会导致同 session 第二轮撞唯一索引。
+  // seq 由 repository 在数据库锁内分配；这里保证同一 run 的事件按 emit 顺序落库。
   const RECORDED_TYPES = new Set([
     'message', 'thinking', 'tool_call', 'tool_result', 'action_required',
     'intent', 'turn_end', 'final', 'error', 'mock_fallback', 'compaction',
   ]);
+  let eventWriteChain = Promise.resolve();
+
+  function flushEventWrites() {
+    return eventWriteChain;
+  }
+
   const emit = (event) => {
     onEvent(event);
     if (RECORDED_TYPES.has(event.type)) {
-      // 异步写，失败不致命（回放缺一两条不影响主流程，日志记录即可）
-      agentEventRepository.append({
-        sessionId, userId, type: event.type, payload: event,
-      }).catch((err) => {
-        console.warn('[agent] event append failed:', safeErr(err));
-      });
+      // 排队但不阻塞主循环；各返回路径会 flush，保证请求结束前已完成提交。
+      eventWriteChain = eventWriteChain
+        .then(() => agentEventRepository.append({
+          sessionId, userId, type: event.type, payload: event,
+        }))
+        .catch((err) => {
+          // 事件落库失败不影响 Agent 主流程，但必须允许后续事件继续写。
+          console.warn('[agent] event append failed:', safeErr(err));
+        });
     }
   };
 
@@ -286,6 +295,7 @@ async function runAgentWithSession({
       text: finalText,
       metadata: toolCalls.length ? buildToolMetadata(toolCalls, { mock: true }) : { mock: true },
     });
+    await flushEventWrites();
     return { finalText, toolCalls };
   }
 
@@ -467,10 +477,12 @@ async function runAgentWithSession({
           text: mockFinal,
           metadata: buildToolMetadata(mockCalls, { mock: true, fallback: true }),
         });
+        await flushEventWrites();
         return { finalText: mockFinal, toolCalls: mockCalls };
       }
       emit(trace.createErrorEvent({ message: `AI 调用失败:${safeErr(err)}` }));
       agentTracer.addEvent(runSpan, 'agent.error', { message: safeErr(err) });
+      await flushEventWrites();
       throw err;
     }
 
@@ -618,6 +630,7 @@ async function runAgentWithSession({
       aborted: true,
       toolCalls: executedCalls.length,
     });
+    await flushEventWrites();
     return { finalText, toolCalls: executedCalls, aborted: true };
   }
 
@@ -650,6 +663,7 @@ async function runAgentWithSession({
     trace: traceContext,
   });
 
+  await flushEventWrites();
   return { finalText, toolCalls: executedCalls };
 }
 
