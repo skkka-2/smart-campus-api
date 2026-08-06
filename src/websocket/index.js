@@ -1,6 +1,7 @@
 const WebSocket = require('ws');
 const chatService = require('../services/chatService');
 const { verify, extractFromHeader } = require('../utils/jwt');
+const { handleChatConnection } = require('../chat/chatSocketHandler');
 
 /** 聊天大厅 receiver_id */
 const HALL_ID = '1';
@@ -91,7 +92,8 @@ function parseHandshake(reqUrl) {
   try {
     const url = new URL(reqUrl, 'http://localhost');
     const userId = url.searchParams.get('userId');
-    const token = url.searchParams.get('token') || extractFromHeader(url.searchParams.get('authorization'));
+    const token =
+      url.searchParams.get('token') || extractFromHeader(url.searchParams.get('authorization'));
     return { userId, token };
   } catch {
     return { userId: null, token: null };
@@ -99,11 +101,12 @@ function parseHandshake(reqUrl) {
 }
 
 function validateHandshake({ userId, token }) {
-  if (!userId) return null;
-  if (!token) return userId;
+  // 旧 / 通道仍允许匿名岗位浏览，但旧聊天写入不能再靠 query 里的 userId 冒充身份。
+  // 新聊天室统一使用 /chat?ticket=...，这里仅保留已验证 token 的兼容连接。
+  if (!userId || !token) return null;
   try {
     const payload = verify(token);
-    return String(payload.id || userId);
+    return payload.id == null ? null : String(payload.id);
   } catch {
     return null;
   }
@@ -112,9 +115,36 @@ function validateHandshake({ userId, token }) {
 // ==================== 主入口 ====================
 
 function initWebSocket(server) {
-  const wss = new WebSocket.Server({ server });
+  // 使用 noServer 明确分流 Upgrade 路径，避免未来新增其它 WS 通道时互相抢连接。
+  const wss = new WebSocket.Server({ noServer: true, maxPayload: 64 * 1024 });
+
+  server.on('upgrade', (req, socket, head) => {
+    let pathname;
+    try {
+      pathname = new URL(req.url, 'http://localhost').pathname;
+    } catch {
+      socket.destroy();
+      return;
+    }
+
+    // / 是旧岗位浏览房间，/chat 是新聊天协议，其它路径不接受 Upgrade。
+    if (pathname !== '/' && pathname !== '/chat') {
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+    });
+  });
 
   wss.on('connection', (ws, req) => {
+    const pathname = new URL(req.url, 'http://localhost').pathname;
+    if (pathname === '/chat') {
+      handleChatConnection(ws, req);
+      return;
+    }
+
     const handshake = parseHandshake(req.url);
     const userId = validateHandshake(handshake);
 
@@ -128,7 +158,11 @@ function initWebSocket(server) {
 
     ws.on('message', async (raw) => {
       let msg;
-      try { msg = JSON.parse(raw.toString()); } catch { return; }
+      try {
+        msg = JSON.parse(raw.toString());
+      } catch {
+        return;
+      }
 
       // === 岗位房间 ===
       if (msg.type === 'joinJobRoom' && msg.jobId != null) {
@@ -181,6 +215,17 @@ function initWebSocket(server) {
   });
 
   console.log('[ws] WebSocket ready (with job rooms)');
+
+  return {
+    close() {
+      for (const ws of wss.clients) {
+        ws.close(1001, 'server shutting down');
+      }
+      return new Promise((resolve) => {
+        wss.close(resolve);
+      });
+    },
+  };
 }
 
 module.exports = initWebSocket;

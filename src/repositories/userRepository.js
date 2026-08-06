@@ -1,9 +1,19 @@
 const { db } = require('../db');
 
 const PROFILE_FIELDS = [
-  'id', 'username', 'phone', 'email', 'avatar_url', 'bio',
-  'major', 'college', 'grade', 'interests',
-  'career_direction', 'preferred_city', 'created_at',
+  'id',
+  'username',
+  'phone',
+  'email',
+  'avatar_url',
+  'bio',
+  'major',
+  'college',
+  'grade',
+  'interests',
+  'career_direction',
+  'preferred_city',
+  'created_at',
 ];
 
 const userRepository = {
@@ -42,12 +52,32 @@ const userRepository = {
     return rows[0] || null;
   },
 
+  async search(keyword, excludeUserId, limit = 20) {
+    const query = String(keyword || '').trim();
+    if (!query) return [];
+    const like = `%${query}%`;
+    const exactId = /^\d+$/.test(query) ? query : null;
+    const [rows] = await db.query(
+      `SELECT id, username, avatar_url, major, college
+         FROM userlist
+        WHERE id <> ?
+          AND (username LIKE ? OR id = ?)
+        ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, username ASC
+        LIMIT ?`,
+      [excludeUserId, like, exactId, exactId, limit],
+    );
+    return rows.map((row) => ({
+      id: String(row.id),
+      username: row.username,
+      avatarUrl: row.avatar_url,
+      major: row.major,
+      college: row.college,
+    }));
+  },
+
   /** 取 password hash（改密验证旧密码用，不对外暴露） */
   async findPasswordById(id) {
-    const [rows] = await db.query(
-      'SELECT id, password FROM userlist WHERE id = ? LIMIT 1',
-      [id],
-    );
+    const [rows] = await db.query('SELECT id, password FROM userlist WHERE id = ? LIMIT 1', [id]);
     return rows[0] || null;
   },
 
@@ -82,7 +112,18 @@ const userRepository = {
    * @param {object} patch
    */
   async updateProfile(id, patch) {
-    const allow = ['username', 'phone', 'email', 'avatar_url', 'bio', 'major', 'college', 'grade', 'career_direction', 'preferred_city'];
+    const allow = [
+      'username',
+      'phone',
+      'email',
+      'avatar_url',
+      'bio',
+      'major',
+      'college',
+      'grade',
+      'career_direction',
+      'preferred_city',
+    ];
     const sets = [];
     const params = [];
     for (const key of allow) {

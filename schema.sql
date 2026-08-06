@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS `userlist` (
   UNIQUE KEY `uk_username` (`username`),
   UNIQUE KEY `uk_phone` (`phone`),
   UNIQUE KEY `uk_email` (`email`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================================
 -- refresh_token：refresh token 存储（JWT 双令牌）
@@ -397,6 +397,13 @@ CREATE TABLE IF NOT EXISTS `agent_events` (
   UNIQUE KEY `uk_session_seq` (`session_id`, `seq`),
   KEY `idx_user_session` (`user_id`, `session_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================================
+-- Chat domain
+-- ============================================================
+-- 聊天新表单独维护在 docs/chat-data-model.sql，避免和 Agent 历史表混用。
+-- 本 schema 通过 mysql 客户端执行时，从项目根目录加载这份增量 DDL。
+SOURCE docs/chat-data-model.sql;
 
 SELECT 'schema v3 init done' AS status,
        (SELECT COUNT(*) FROM article)    AS articles,

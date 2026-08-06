@@ -59,7 +59,8 @@ mysql_secure_installation   # 设置 root 密码
 mysql -u root -p < schema.sql
 ```
 
-也可以在 Sequel Ace / DBeaver 里粘贴 `schema.sql` 执行。
+也可以在 Sequel Ace / DBeaver 里执行；如果客户端不支持 mysql 的 `SOURCE` 命令，先执行
+`schema.sql`，再单独执行 `docs/chat-data-model.sql`。
 
 ### 3. 配置 .env
 
@@ -301,11 +302,22 @@ AGENT_TRACE_SAMPLE_RATIO=1
     GROUP BY model
 ```
 
-### 聊天室(WebSocket)
+### 聊天室
+
+新聊天室使用独立的 `chat_*` 表，REST 负责持久数据，WebSocket 只负责实时事件：
+
 | Method | Path | 说明 |
 |--------|------|------|
-| GET | `/api/chat/history?limit=10` | 最新 N 条群聊 |
-| WS  | `ws://host:3007/?userId=xxx&token=xxx` | 消息格式 `{ senderId, receiverIds, content }` |
+| POST | `/api/chat/socket-ticket` | 为当前登录用户生成一次性 60 秒连接 ticket |
+| GET | `/api/chat/conversations` | 获取会话列表，默认包含校园实时论坛 |
+| GET | `/api/chat/conversations/:id/messages` | 游标分页获取历史消息 |
+| POST | `/api/chat/conversations/:id/read` | 更新已读位置 |
+| WS | `wss://host/chat?ticket=...` | `connection.ready`、`message.send`、`message.accepted`、`message.new` |
+
+浏览器不能在原生 WebSocket 握手中可靠地设置 Authorization header，因此必须先调用
+`socket-ticket`，不能把 JWT 放进 WebSocket URL。部署参数和 Nginx Upgrade 配置见
+[`docs/chat-deployment.md`](docs/chat-deployment.md)。旧 `/` WebSocket 只保留给岗位浏览人数，
+匿名连接不能写入旧聊天消息。
 
 ### 其它
 | Method | Path | 说明 |
