@@ -28,11 +28,11 @@ async function bootstrap() {
 
   const app = new Koa();
 
-  app.use(errorMiddleware);            // 必须最外层,兜住所有 throw
+  app.use(errorMiddleware); // 必须最外层,兜住所有 throw
   app.use(loggerMiddleware);
   app.use(corsMiddleware);
-  app.use(bodyParser());               // Koa2 自带 ctx.cookies，refresh token 直接用它
-  app.use(responseMiddleware);         // 挂 ctx.success / ctx.fail
+  app.use(bodyParser()); // Koa2 自带 ctx.cookies，refresh token 直接用它
+  app.use(responseMiddleware); // 挂 ctx.success / ctx.fail
   // 静态文件：头像通过 /uploads/avatars/xxx.png 访问
   // root 设为 cwd，让 /uploads/... 直接映射到 <cwd>/uploads/...
   const serve = require('koa-static');
@@ -44,14 +44,19 @@ async function bootstrap() {
     console.log(`[app] server listening on http://localhost:${config.port}`);
   });
 
-  initWebSocket(server);
+  const websocket = initWebSocket(server);
 
   const shutdown = (signal) => {
     console.log(`[app] received ${signal}, shutting down`);
-    server.close(async () => {
-      await observability.shutdown();
-      process.exit(0);
-    });
+    websocket
+      .close()
+      .catch((error) => console.error('[app] websocket shutdown failed:', error.message))
+      .finally(() => {
+        server.close(async () => {
+          await observability.shutdown();
+          process.exit(0);
+        });
+      });
     setTimeout(() => process.exit(1), 5_000).unref();
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
