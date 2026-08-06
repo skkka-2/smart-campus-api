@@ -12,7 +12,7 @@ const db = mysql.createPool({
   queueLimit: 0,
   charset: 'utf8mb4',
   dateStrings: false,
-  timezone: 'local',
+  timezone: config.db.timezone,
 });
 
 async function verifyConnection() {

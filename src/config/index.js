@@ -33,6 +33,7 @@ const config = {
     password: process.env.MYSQL_PASSWORD || '',
     database: process.env.MYSQL_DATABASE || 'item_01',
     connectionLimit: parseInt10(process.env.MYSQL_POOL_SIZE, 10),
+    timezone: process.env.MYSQL_TIMEZONE || '+08:00',
   },
 
   jwt: {
