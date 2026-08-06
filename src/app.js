@@ -3,7 +3,7 @@ const bodyParser = require('koa-bodyparser');
 
 const observability = require('./observability/instrumentation');
 const config = require('./config');
-const { verifyConnection } = require('./db');
+const { verifyConnection, verifySchema } = require('./db');
 const { responseMiddleware } = require('./utils/response');
 const errorMiddleware = require('./middleware/error');
 const loggerMiddleware = require('./middleware/logger');
@@ -14,6 +14,7 @@ const initWebSocket = require('./websocket');
 async function bootstrap() {
   await observability.start();
   await verifyConnection();
+  await verifySchema();
 
   // 启动时校验：所有注册工具都必须在 safetyPolicy.TOOL_RISK 里登记风险等级，
   // 漏登记（新写工具忘了配确认）直接启动失败。fail fast at startup。

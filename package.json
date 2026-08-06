@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
+    "db:migrate": "node scripts/migrate.js",
     "lint": "eslint src",
     "format": "prettier --write \"src/**/*.{js,json}\" \"*.{js,json,md}\""
   },

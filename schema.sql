@@ -68,6 +68,8 @@ DELIMITER $$
 CREATE PROCEDURE `add_user_profile_columns`()
 BEGIN
   DECLARE db VARCHAR(64) DEFAULT DATABASE();
+  IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'userlist' AND COLUMN_NAME = 'email')
+    THEN ALTER TABLE `userlist` ADD COLUMN `email` VARCHAR(128) DEFAULT NULL COMMENT '邮箱' AFTER `phone`; END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'userlist' AND COLUMN_NAME = 'avatar_url')
     THEN ALTER TABLE `userlist` ADD COLUMN `avatar_url` VARCHAR(500) DEFAULT NULL; END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'userlist' AND COLUMN_NAME = 'bio')
@@ -84,6 +86,8 @@ BEGIN
     THEN ALTER TABLE `userlist` ADD COLUMN `career_direction` VARCHAR(64) DEFAULT NULL; END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'userlist' AND COLUMN_NAME = 'preferred_city')
     THEN ALTER TABLE `userlist` ADD COLUMN `preferred_city` VARCHAR(32) DEFAULT NULL; END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = db AND TABLE_NAME = 'userlist' AND INDEX_NAME = 'uk_email')
+    THEN ALTER TABLE `userlist` ADD UNIQUE KEY `uk_email` (`email`); END IF;
 END$$
 DELIMITER ;
 CALL `add_user_profile_columns`();

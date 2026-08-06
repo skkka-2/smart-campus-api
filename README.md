@@ -62,6 +62,14 @@ mysql -u root -p < schema.sql
 也可以在 Sequel Ace / DBeaver 里执行；如果客户端不支持 mysql 的 `SOURCE` 命令，先执行
 `schema.sql`，再单独执行 `docs/chat-data-model.sql`。
 
+已有数据库升级时不要重新执行包含删表/重建逻辑的完整 `schema.sql`，使用幂等增量迁移：
+
+```bash
+npm run db:migrate
+```
+
+迁移会补齐 refresh token、Agent 事件、旧聊天历史字段、用户资料字段和聊天室表；应用启动时也会校验必需表/字段，避免结构缺失直到请求阶段才暴露为 500。
+
 ### 3. 配置 .env
 
 ```bash
