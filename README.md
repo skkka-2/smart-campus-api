@@ -36,6 +36,7 @@ smart-campus-api/
 │   ├── utils/                # 响应包装、jwt、分页
 │   └── websocket/            # WebSocket handler(连接级作用域)
 ├── schema.sql                # 数据库初始化(建库 + 建表 + 种子数据)
+├── scripts/sync-home-content.js # 首页公开内容同步(后端运行,幂等)
 ├── .env.example              # 环境变量模板
 ├── eslint.config.js
 ├── .prettierrc.json
@@ -148,6 +149,14 @@ npm run dev
 | GET  | `/api/articles/rankings` | ✗ | 首页右侧三榜 |
 | POST | `/api/articles` | ✓ | body: `{ content, title?, categoryId? }` |
 | POST | `/api/articles/:id/like` | ✓ | 切换点赞;返回 `{ liked, likeCount }` |
+
+首页内容同步:
+
+```bash
+npm run content:sync
+```
+
+说明见 [`docs/home-content.md`](docs/home-content.md)。外部内容会落库并保留来源链接,前端不会直接依赖第三方站点。
 
 ### 分类
 | Method | Path | Auth | 说明 |

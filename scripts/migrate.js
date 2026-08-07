@@ -102,6 +102,31 @@ async function migrate() {
     `);
 
     for (const [column, definition] of [
+      [
+        'source_type',
+        "VARCHAR(24) NOT NULL DEFAULT 'native' COMMENT 'native/editorial/newsnow/hackernews' AFTER sort_type",
+      ],
+      ['source_name', 'VARCHAR(64) DEFAULT NULL AFTER source_type'],
+      ['source_url', 'VARCHAR(500) DEFAULT NULL AFTER source_name'],
+      ['external_id', 'VARCHAR(160) DEFAULT NULL AFTER source_url'],
+      ['published_at', 'DATETIME DEFAULT NULL AFTER external_id'],
+    ]) {
+      await ensureColumn(connection, 'article', column, definition);
+    }
+    await ensureIndex(
+      connection,
+      'article',
+      'idx_article_published',
+      'KEY idx_article_published (published_at)',
+    );
+    await ensureIndex(
+      connection,
+      'article',
+      'uk_article_source',
+      'UNIQUE KEY uk_article_source (source_type, external_id)',
+    );
+
+    for (const [column, definition] of [
       ['email', "VARCHAR(128) DEFAULT NULL COMMENT '邮箱' AFTER phone"],
       ['avatar_url', 'VARCHAR(500) DEFAULT NULL'],
       ['bio', 'VARCHAR(200) DEFAULT NULL'],

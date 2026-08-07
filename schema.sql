@@ -134,12 +134,19 @@ CREATE TABLE `article` (
   `view_count` INT UNSIGNED NOT NULL DEFAULT 0,
   `like_count` INT UNSIGNED NOT NULL DEFAULT 0,
   `sort_type` ENUM('recommend', 'latest') NOT NULL DEFAULT 'latest',
+  `source_type` VARCHAR(24) NOT NULL DEFAULT 'native' COMMENT 'native/editorial/newsnow/hackernews',
+  `source_name` VARCHAR(64) DEFAULT NULL,
+  `source_url` VARCHAR(500) DEFAULT NULL,
+  `external_id` VARCHAR(160) DEFAULT NULL,
+  `published_at` DATETIME DEFAULT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_category` (`category_id`),
   KEY `idx_sort_type` (`sort_type`),
   KEY `idx_created` (`created_at`),
+  KEY `idx_article_published` (`published_at`),
+  UNIQUE KEY `uk_article_source` (`source_type`, `external_id`),
   CONSTRAINT `fk_article_category` FOREIGN KEY (`category_id`) REFERENCES `category` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
